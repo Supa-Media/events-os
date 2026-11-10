@@ -4,7 +4,7 @@
  * know that you chased them yesterday" — the follow-ups (`chaseFollowUps.ts`)
  * ran, but nothing in the app said so.
  *
- * Times are Eastern, like the 9am run that sends them.
+ * Times are Eastern, like the 7pm run that sends them.
  */
 export type ChaseFollowUpStatus = {
   chasedAt: number;
@@ -37,7 +37,7 @@ function when(ts: number, now: number): string {
 export function chaseStatusLine(s: ChaseFollowUpStatus, now: number): string {
   const chased = `Chased ${when(s.chasedAt, now)}`;
   if (s.reminderCount === 0 || s.lastRemindedAt == null) {
-    return `${chased} · daily reminders start the next morning`;
+    return `${chased} · daily reminders start tomorrow evening`;
   }
   const times = s.reminderCount === 1 ? "1 reminder" : `${s.reminderCount} reminders`;
   const told = s.chaserTold ? " · chaser emailed" : "";
