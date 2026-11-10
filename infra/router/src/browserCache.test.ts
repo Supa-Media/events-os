@@ -56,6 +56,22 @@ describe("bundleFileOrMissing", () => {
   });
 });
 
+describe("bundleFileOrMissing for Expo bundle files", () => {
+  // Expo can ship different content under the same bundle name, so a
+  // browser must check back rather than keep a copy for a year.
+  it("makes a real bundle file revalidate on every load", () => {
+    const out = bundleFileOrMissing(res(200, "application/javascript"), "revalidate");
+    expect(out.status).toBe(200);
+    expect(out.headers.get("Cache-Control")).toBe("no-cache");
+  });
+
+  it("still turns the SPA fallback into an uncached 404", () => {
+    const out = bundleFileOrMissing(res(200, "text/html"), "revalidate");
+    expect(out.status).toBe(404);
+    expect(out.headers.get("Cache-Control")).toBe("no-store");
+  });
+});
+
 describe("withShellRevalidation", () => {
   it("makes the app's HTML shell revalidate on every visit", () => {
     const out = withShellRevalidation(res(200, "text/html"));

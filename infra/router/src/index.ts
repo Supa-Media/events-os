@@ -70,12 +70,21 @@ function isRealFile(upstream: Response): boolean {
  * It also kept that HTML out of the edge cache: with `cacheEverything` it
  * was stored under the script's name for a year.
  */
-export function bundleFileOrMissing(upstream: Response): Response {
-  if (isRealFile(upstream)) return withBrowserCache(upstream);
-  return new Response("Not found", {
-    status: 404,
-    headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
-  });
+export function bundleFileOrMissing(
+  upstream: Response,
+  cache: "immutable" | "revalidate" = "immutable",
+): Response {
+  if (!isRealFile(upstream)) {
+    return new Response("Not found", {
+      status: 404,
+      headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+    });
+  }
+  if (cache === "immutable") return withBrowserCache(upstream);
+  // Expo's bundle files: see route.ts for why their names can't be trusted.
+  const response = new Response(upstream.body, upstream);
+  response.headers.set("Cache-Control", "no-cache");
+  return response;
 }
 
 /**
@@ -93,9 +102,10 @@ export function withShellRevalidation(upstream: Response): Response {
   return response;
 }
 
-/** Bumped when what the edge may hold under a bundle URL changes: v1 entries
- *  were written by `cacheEverything` and can be SPA-fallback HTML. */
-const EDGE_CACHE_KEY_PREFIX = "https://edge-cache.internal/v2/";
+/** Bumped when what the edge may hold under a URL changes: v1 entries were
+ *  written by `cacheEverything` and can be SPA-fallback HTML; v2 held Expo
+ *  bundle files, which are no longer edge-cached at all. */
+const EDGE_CACHE_KEY_PREFIX = "https://edge-cache.internal/v3/";
 
 export default {
   async fetch(
@@ -128,9 +138,13 @@ export default {
         const proxyRequest = new Request(target, request);
         proxyRequest.headers.set("Host", target.host);
 
+        if (decision.cache === "revalidate") {
+          return bundleFileOrMissing(await fetch(proxyRequest), "revalidate");
+        }
+
         if (decision.cache === "immutable") {
-          // Content-hashed bundle output (Expo's /_expo/*): kept in the
-          // edge cache by hand, so that only a real file is ever stored.
+          // Truly content-hashed files (fonts, icons): kept in the edge
+          // cache by hand, so that only a real file is ever stored.
           // Cookie-bearing requests are ineligible for edge caching anyway.
           proxyRequest.headers.delete("Cookie");
           const cacheable = request.method === "GET";

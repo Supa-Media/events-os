@@ -20,7 +20,7 @@
 
 export type RouteDecision =
   | { kind: "redirect"; location: string }
-  | { kind: "proxy"; target: string; cache?: "immutable" }
+  | { kind: "proxy"; target: string; cache?: "immutable" | "revalidate" }
   | { kind: "assets" };
 
 export const EXPO_ORIGIN = "https://events-os.expo.app";
@@ -214,13 +214,22 @@ export function route(url: URL): RouteDecision {
   // apply the same path rules as the apex.
   if (pathname === OS_PREFIX || pathname.startsWith(`${OS_PREFIX}/`)) {
     const strippedPath = stripOsPrefix(pathname);
-    // Expo's content-hashed bundle output (/_expo/*) is immutable — safe to
-    // cache at the edge and in the browser indefinitely (see index.ts's proxy
-    // branch). So are exported assets (fonts, icons) whose file name carries
-    // their content hash, e.g. /assets/…/DMSans_400Regular.<32 hex>.ttf.
-    const cache =
-      strippedPath.startsWith("/_expo/") || HASHED_ASSET.test(strippedPath)
-        ? "immutable"
+    // Exported assets (fonts, icons) whose file name carries the md5 of
+    // their bytes are immutable — safe to cache at the edge and in the
+    // browser indefinitely (see index.ts's proxy branch).
+    //
+    // Expo's bundle output (/_expo/*) is NOT, despite the hash in its names.
+    // @expo/metro-config 54 hashes a chunk's code WITHOUT the table of
+    // route-chunk file names it loads, so a deploy can ship a different
+    // entry-<hash>.js under the SAME name. A phone that was told to keep the
+    // old one for a year then asks for route chunks that no longer exist and
+    // crashes on "Requiring unknown module" (Dev2, 2026-11-10, /os/code).
+    // Those files are revalidated on every load instead: a 304 when nothing
+    // changed.
+    const cache = HASHED_ASSET.test(strippedPath)
+      ? "immutable"
+      : strippedPath.startsWith("/_expo/")
+        ? "revalidate"
         : undefined;
     return {
       kind: "proxy",
