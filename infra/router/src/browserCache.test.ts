@@ -65,6 +65,11 @@ describe("bundleFileOrMissing for Expo bundle files", () => {
     expect(out.headers.get("Cache-Control")).toBe("no-cache");
   });
 
+  it("passes a 304 (browser revalidation) straight through", () => {
+    const out = bundleFileOrMissing(new Response(null, { status: 304 }), "revalidate");
+    expect(out.status).toBe(304);
+  });
+
   it("still turns the SPA fallback into an uncached 404", () => {
     const out = bundleFileOrMissing(res(200, "text/html"), "revalidate");
     expect(out.status).toBe(404);
