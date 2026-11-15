@@ -27,6 +27,7 @@ export function BulkBar({
   onMarkPayout,
   onNoDocumentation,
   onExplain,
+  onRequestCoding,
 }: {
   count: number;
   categoryItems: PickerItem[];
@@ -94,6 +95,11 @@ export function BulkBar({
   // different meaning: a transfer belongs to no budget, whereas a refund exists
   // precisely so the ORIGINAL CHARGE stops counting against one.
   onMarkRefund?: () => void;
+  // "Ask for coding" (founder, 2026-11-14): mark the selection as owing an
+  // explanation even where the policy wouldn't ask (pre-policy or already
+  // reconciled), so the person-band Chase reaches it. Present only for a
+  // caller who can chase this view.
+  onRequestCoding?: () => void;
 }) {
   const canMarkTransfer = count === 2;
   return (
@@ -184,6 +190,15 @@ export function BulkBar({
             size="sm"
             icon="edit-3"
             onPress={onNoDocumentation}
+          />
+        ) : null}
+        {onRequestCoding ? (
+          <Button
+            title="Ask for coding"
+            variant="secondary"
+            size="sm"
+            icon="help-circle"
+            onPress={onRequestCoding}
           />
         ) : null}
       </View>

@@ -123,3 +123,29 @@ export async function requireCodingChase(
   await requireFinanceManager(ctx, homeChapterId);
   return [args.chapterId ?? homeChapterId];
 }
+
+/**
+ * ASKING FOR A CODING THE POLICY DOESN'T REQUIRE — who may mark a charge
+ * (pre-policy, or already reconciled) as owing an explanation anyway
+ * (`finances.requestCoding`, founder 2026-11-14).
+ *
+ * The same power as the chase, on purpose: asking for a coding exists so the
+ * chase can reach that charge, and a person who can't chase gains nothing by
+ * asking. So it is the chase's floor applied to ONE row's book: a manager of
+ * that chapter's book, or a central manager for central's book or any
+ * chapter's. When the chase graduates to a seat capability, this body moves
+ * with it.
+ */
+export async function requireCodingRequest(
+  ctx: QueryCtx,
+  homeChapterId: Id<"chapters">,
+  rowBook: FinanceScope,
+): Promise<void> {
+  if (rowBook === CENTRAL) {
+    await requireCodingChase(ctx, homeChapterId, { scope: "central" });
+    return;
+  }
+  await requireCodingChase(ctx, homeChapterId, {
+    chapterId: rowBook as Id<"chapters">,
+  });
+}

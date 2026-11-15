@@ -759,6 +759,14 @@ export const transactions = defineTable({
   codingState: v.optional(
     v.union(...TRANSACTION_CODING_STATUSES.map((s) => v.literal(s))),
   ),
+  // A manager ASKED for this charge to be coded even though the policy would
+  // not require it: posted before `codingRequiredSinceMs`, or already
+  // `reconciled` (founder, 2026-11-14: Zay Powell's early-August charges).
+  // Set by `finances.requestCoding`; `requiresCoding`, the chase predicates
+  // and the member's own to-do list all honour it. Cleared by the same
+  // mutation with `clear: true`.
+  codingRequestedAt: v.optional(v.number()),
+  codingRequestedByUserId: v.optional(v.id("users")),
 
   // Receipt-reminder timeline (day-1 flag → day-3 escalate, tracked by
   // `cards.advanceReceiptReminders`). `undefined` = no reminder sent yet.

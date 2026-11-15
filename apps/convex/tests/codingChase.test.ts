@@ -921,3 +921,58 @@ describe("the chase email itself", () => {
     }
   });
 });
+
+// ── ASK FOR CODING ───────────────────────────────────────────────────────────
+// Founder, 2026-11-14: "I need an explanation for all of his charges in
+// August" — pre-policy and already-reconciled charges the chase couldn't reach.
+describe("finances.requestCoding", () => {
+  test("a pre-policy, reconciled charge becomes chaseable once asked for", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await armCodingPolicy(s, 30);
+    await asManager(s);
+    const ada = await seedCardholder(s, "Ada");
+    const old = await seedCharge(s, {
+      cardId: ada.cardId,
+      merchantName: "Amazon",
+      ageDays: 60,
+      status: "reconciled",
+      receiptStorageId: await storeBlob(t),
+    });
+
+    const before = await s.as.query(internal.finances.getCodingChaseTargets, {});
+    expect(chargesOf(before)).toEqual([]);
+
+    const res = await s.as.mutation(api.finances.requestCoding, {
+      transactionIds: [old],
+    });
+    expect(res).toEqual({ updated: 1, skipped: 0 });
+    const after = await s.as.query(internal.finances.getCodingChaseTargets, {});
+    expect(chargesOf(after)).toEqual(["Amazon"]);
+
+    // Coded: nothing left to ask for.
+    await run(t, (ctx) => ctx.db.patch(old, { codingState: "submitted" }));
+    const done = await s.as.query(internal.finances.getCodingChaseTargets, {});
+    expect(chargesOf(done)).toEqual([]);
+
+    // Taking the ask back.
+    await run(t, (ctx) => ctx.db.patch(old, { codingState: undefined }));
+    await s.as.mutation(api.finances.requestCoding, {
+      transactionIds: [old],
+      clear: true,
+    });
+    const cleared = await s.as.query(internal.finances.getCodingChaseTargets, {});
+    expect(chargesOf(cleared)).toEqual([]);
+  });
+
+  test("a bookkeeper can't ask", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asBookkeeper(s);
+    const ada = await seedCardholder(s, "Ada");
+    const charge = await seedCharge(s, { cardId: ada.cardId, ageDays: 60 });
+    await expect(
+      s.as.mutation(api.finances.requestCoding, { transactionIds: [charge] }),
+    ).rejects.toThrow();
+  });
+});

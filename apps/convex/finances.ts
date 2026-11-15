@@ -164,7 +164,7 @@ import {
   isUncodedCharge,
   type ChaseTarget,
 } from "./lib/codingReminders";
-import { requireCodingChase } from "./lib/chaseAccess";
+import { requireCodingChase, requireCodingRequest } from "./lib/chaseAccess";
 import { reconcileFilterValidator } from "./lib/reconcileArgs";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import { listActiveChapters } from "./lib/chapters";
@@ -384,6 +384,9 @@ const txnSummaryFields = {
     ...TRANSACTION_CODING_STATUSES.map((s) => v.literal(s)),
     v.null(),
   ),
+  // A manager asked for this charge's coding though the policy wouldn't
+  // require it (`requestCoding`) — the member's to-do list must ask too.
+  codingRequested: v.boolean(),
   // The personal-charge flag (`cards.flagPersonalCharge` / `flagPersonal`) —
   // an accidental personal charge, excluded from every SPEND total until
   // repaid. Surfaced (R1b follow-up) so the Reconcile grid + member "My
@@ -1114,6 +1117,7 @@ function toTxnSummary(tr: Doc<"transactions">, giftCoveredCents = 0) {
     hasReceipt: tr.receiptStorageId != null,
     hasApprovedException: tr.approvedReceiptExceptionId != null,
     codingState: tr.codingState ?? null,
+    codingRequested: tr.codingRequestedAt != null,
     isPersonal: tr.isPersonal === true,
     isMarkedTransfer: isMarkedTransfer(tr),
     payoutProcessor: tr.payoutProcessor ?? null,
@@ -1723,7 +1727,8 @@ export function requiresCoding(
   tr: Doc<"transactions">,
   sinceMs: number,
 ): boolean {
-  if (tr.postedAt < sinceMs) return false;
+  // Pre-policy, unless a manager asked for it (`requestCoding`).
+  if (tr.postedAt < sinceMs && tr.codingRequestedAt == null) return false;
   // A processor fee is spend, but there is no testimony to give: nobody
   // chose it, witnessed it, or can substantiate it beyond what the
   // processor's ledger already says (founder, 2026-08-12). `isSpend`
@@ -2157,8 +2162,9 @@ export function isUncoded(tr: Doc<"transactions">, sinceMs: number): boolean {
   // CHASE semantics, like `needsDocumentation`: a closed row has nobody left
   // to chase. Post-policy rows can't legitimately CLOSE uncoded (the
   // `CODING_REQUIRED` gate refuses), so the only rows this skips are
-  // legacy/direct writes — visible to an audit, not to the nag.
-  if (tr.status === "reconciled") return false;
+  // legacy/direct writes — visible to an audit, not to the nag. A manager's
+  // explicit ask (`requestCoding`) reopens it to the nag on purpose.
+  if (tr.status === "reconciled" && tr.codingRequestedAt == null) return false;
   return tr.codingState == null || tr.codingState === "changes_requested";
 }
 
@@ -11985,6 +11991,63 @@ export const categorizeTransaction = mutation({
       afterBudgetId: args.budgetId === undefined ? (txn.budgetId ?? null) : args.budgetId,
     });
     return null;
+  },
+});
+
+/**
+ * ASK FOR CODING on charges the policy doesn't require it for: posted before
+ * `codingRequiredSinceMs`, or already `reconciled` (founder, 2026-11-14:
+ * "I need an explanation for all of his charges in August"). Sets
+ * `codingRequestedAt`, which `requiresCoding`, the chase predicates and the
+ * member's own to-do list honour, so the next Chase (and its daily
+ * follow-ups) reaches these rows. `clear: true` takes the ask back.
+ *
+ * Only spend can carry an explanation (`canCarryExplanation`); anything else
+ * in the selection is skipped and counted, never refused, so a mixed bulk
+ * selection still does the part it can. Gate: `requireCodingRequest`, the
+ * chase's own floor applied to each row's book.
+ */
+export const requestCoding = mutation({
+  args: {
+    transactionIds: v.array(v.id("transactions")),
+    clear: v.optional(v.boolean()),
+  },
+  returns: v.object({ updated: v.number(), skipped: v.number() }),
+  handler: async (ctx, args) => {
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    let updated = 0;
+    let skipped = 0;
+    for (const id of args.transactionIds.slice(0, 500)) {
+      const txn = await ctx.db.get(id);
+      if (!txn) {
+        skipped++;
+        continue;
+      }
+      await requireCodingRequest(ctx, homeChapterId, txn.chapterId as FinanceScope);
+      if (args.clear) {
+        if (txn.codingRequestedAt != null) {
+          await ctx.db.patch(id, {
+            codingRequestedAt: undefined,
+            codingRequestedByUserId: undefined,
+          });
+          updated++;
+        }
+        continue;
+      }
+      if (!canCarryExplanation(txn) || isNonDiscretionaryFee(txn)) {
+        skipped++;
+        continue;
+      }
+      if (txn.codingRequestedAt == null) {
+        await ctx.db.patch(id, {
+          codingRequestedAt: Date.now(),
+          codingRequestedByUserId: userId,
+        });
+      }
+      updated++;
+    }
+    return { updated, skipped };
   },
 });
 
