@@ -44,9 +44,9 @@ describe("enum integrity", () => {
   // The two dates are pinned SEPARATELY and asserted to be different, because
   // the bug this replaced was them being the same number: "coding is required"
   // could not be turned on without also turning on "and we'll bill you for it".
-  test("coding is REQUIRED from August 8, 2026 UTC (owner: make it live now)", () => {
+  test("coding is REQUIRED from August 1, 2026 UTC (moved back from Aug 8, 2026-11-14)", () => {
     expect(new Date(DEFAULT_CODING_REQUIRED_SINCE_MS).toISOString()).toBe(
-      "2026-08-08T00:00:00.000Z",
+      "2026-08-01T00:00:00.000Z",
     );
   });
 

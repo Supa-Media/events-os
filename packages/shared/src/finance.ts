@@ -1034,7 +1034,9 @@ export const DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT = 15;
 /** Policy start (owner decision, 2026-08-08): coding is REQUIRED — the
  *  reconcile gate refuses `reconciled` on an uncoded row, the `uncoded` facet
  *  counts it, the digest asks for it — for spend posted at/after the day the
- *  policy was ratified, **August 8, 2026 UTC**.
+ *  policy was ratified, **August 8, 2026 UTC** — moved back to **August 1,
+ *  2026 UTC** (founder, 2026-11-14) so the first week of August, which held
+ *  uncoded spend nobody could be chased for, owes coding too.
  *
  *  THE REQUIREMENT AND THE CONSEQUENCE ARE TWO DATES, NOT ONE (owner
  *  clarification, 2026-08-09: *"make it live now, but only implement the
@@ -1054,7 +1056,7 @@ export const DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT = 15;
  *  Stored as `financeSettings.codingRequiredSinceMs`; this is the fallback, so
  *  the policy arms itself with no runtime config step. Moving it is a
  *  deliberate central-finance act, not an "off" switch. */
-export const DEFAULT_CODING_REQUIRED_SINCE_MS = Date.UTC(2026, 7, 8);
+export const DEFAULT_CODING_REQUIRED_SINCE_MS = Date.UTC(2026, 7, 1);
 
 /** The date the CONSEQUENCE arms: **September 1, 2026 UTC** (owner decision,
  *  2026-08-08, preserved verbatim when the requirement moved earlier).
