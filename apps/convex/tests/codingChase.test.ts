@@ -793,13 +793,27 @@ describe("the chase email itself", () => {
         status[0].followUp!.chasedAt,
       );
 
-      // Coded: no more reminders, and the row is gone.
+      // Coded: no more reminders, and the Book says they stopped.
       const receipt = await storeBlob(t);
       await run(t, (ctx) =>
         ctx.db.patch(uber, { codingState: "submitted", receiptStorageId: receipt }),
       );
       await t.action(internal.chaseFollowUps.sendDaily, {});
       expect(sent).toHaveLength(2);
+      const done = await s.as.query(api.cards.getManualNudgeStatus, {
+        personIds: [ada.personId],
+      });
+      expect(done[0].followUp).toBeUndefined();
+      expect(done[0].stoppedAt).toBeGreaterThan(0);
+
+      // Still nothing the next day; a week after it stopped, the row is gone.
+      await t.action(internal.chaseFollowUps.sendDaily, {});
+      expect(sent).toHaveLength(2);
+      await run(t, async (ctx) => {
+        const row = await ctx.db.query("codingChaseFollowUps").first();
+        await ctx.db.patch(row!._id, { settledAt: Date.now() - 8 * DAY_MS });
+      });
+      await t.action(internal.chaseFollowUps.sendDaily, {});
       const left = await run(t, (ctx) =>
         ctx.db.query("codingChaseFollowUps").collect(),
       );

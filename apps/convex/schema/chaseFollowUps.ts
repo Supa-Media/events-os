@@ -30,6 +30,10 @@ export const codingChaseFollowUps = defineTable({
   /** What the manager said when chasing, repeated in each follow-up. */
   reasons: v.optional(v.array(v.string())),
   note: v.optional(v.string()),
+  /** When the daily sweep found this charge no longer owes anything. The row
+   *  is kept `DONE_KEEP_MS` after that so the Book can say "Done, reminders
+   *  stopped" (founder, 2026-11-14), then deleted. Re-chasing clears it. */
+  settledAt: v.optional(v.number()),
 })
   .index("by_transaction", ["transactionId"])
   .index("by_chasedAt", ["chasedAt"])

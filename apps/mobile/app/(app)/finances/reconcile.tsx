@@ -141,7 +141,10 @@ import {
 } from "../../../components/finance/reconcile/gridView";
 import { BulkNoDocumentationModal } from "../../../components/finance/modals/BulkNoDocumentationModal";
 import { ChaseReasonModal } from "../../../components/finance/reconcile/ChaseReasonModal";
-import { chaseStatusLine } from "../../../components/finance/reconcile/chaseStatus";
+import {
+  chaseStatusLine,
+  chaseStoppedLine,
+} from "../../../components/finance/reconcile/chaseStatus";
 import {
   BulkExplainModal,
   BulkExplainResults,
@@ -793,6 +796,16 @@ function ReconcileGrid() {
         (nudgeStatus ?? [])
           .filter((n) => n.lastManualNudgeAt != null)
           .map((n) => n.personId),
+      ),
+    [nudgeStatus],
+  );
+  // Someone whose chased charges are all done: when the reminders stopped.
+  const stoppedByPerson = useMemo(
+    () =>
+      new Map(
+        (nudgeStatus ?? []).flatMap((n) =>
+          n.stoppedAt != null ? [[n.personId, n.stoppedAt] as const] : [],
+        ),
       ),
     [nudgeStatus],
   );
@@ -2604,6 +2617,7 @@ function ReconcileGrid() {
                 const selectedHere = selectedCountByPerson.get(group.key) ?? 0;
                 if (chasingSelection && selectedHere === 0) return null;
                 const followUp = followUpByPerson.get(personId);
+                const stoppedAt = stoppedByPerson.get(personId);
                 return (
                   <View className="items-end gap-1">
                     <Button
@@ -2630,6 +2644,10 @@ function ReconcileGrid() {
                     {followUp ? (
                       <Text className="text-xs text-muted text-right">
                         {chaseStatusLine(followUp, Date.now())}
+                      </Text>
+                    ) : stoppedAt != null ? (
+                      <Text className="text-xs text-success text-right">
+                        {chaseStoppedLine(stoppedAt, Date.now())}
                       </Text>
                     ) : null}
                   </View>
