@@ -188,7 +188,9 @@ function chaseEligible(tr: Doc<"transactions">): boolean {
   return (
     tr.flow === "outflow" &&
     tr.status !== "excluded" &&
-    tr.status !== "reconciled" &&
+    // A reconciled row has nobody left to chase, unless a manager asked for
+    // its coding (`finances.requestCoding`, founder 2026-11-14).
+    (tr.status !== "reconciled" || tr.codingRequestedAt != null) &&
     tr.isPersonal !== true
   );
 }
@@ -217,7 +219,7 @@ export function chargeOutstanding(
     // which has already run. Keep it that way: a fee exemption written HERE
     // would still leave a fee row answering "needs a receipt", because the
     // receipt half of the label doesn't consult this flag at all.
-    requiresCoding: tr.postedAt >= sinceMs,
+    requiresCoding: tr.postedAt >= sinceMs || tr.codingRequestedAt != null,
   });
 }
 
@@ -242,6 +244,6 @@ export function isUncodedCharge(
   sinceMs: number,
 ): boolean {
   if (!chaseEligible(tr)) return false;
-  if (tr.postedAt < sinceMs) return false;
+  if (tr.postedAt < sinceMs && tr.codingRequestedAt == null) return false;
   return tr.codingState == null || tr.codingState === "changes_requested";
 }

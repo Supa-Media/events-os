@@ -56,6 +56,9 @@ export interface ChargeFacts {
   /** `null` = no coding has ever been submitted. There is no "uncoded"
    *  literal — absence IS the uncoded state, on the wire and here. */
   codingStatus?: TransactionCodingStatus | null;
+  /** A manager asked for this charge's coding (`finances.requestCoding`):
+   *  owed even before the policy date, and even on a reconciled row. */
+  codingRequested?: boolean;
 }
 
 export type ChargeTodoKind =
@@ -105,7 +108,7 @@ export function isSpendCharge(f: ChargeFacts): boolean {
  *  `ChargeFacts` and read the shared predicate, never re-derive it from the
  *  category (a chosen subscription sits in Bank & Fees too). */
 export function codingRequired(f: ChargeFacts, sinceMs: number): boolean {
-  return isSpendCharge(f) && f.postedAt >= sinceMs;
+  return isSpendCharge(f) && (f.postedAt >= sinceMs || f.codingRequested === true);
 }
 
 /**
@@ -126,7 +129,8 @@ export function chargeTodo(f: ChargeFacts, sinceMs: number): ChargeTodo {
       outstanding: [],
     };
   }
-  const closed = f.status === "reconciled";
+  // Reconciled = nobody left to chase, unless a manager asked for the coding.
+  const closed = f.status === "reconciled" && f.codingRequested !== true;
   const documented = f.hasReceipt || f.hasApprovedException === true;
   const needsCoding =
     codingRequired(f, sinceMs) &&

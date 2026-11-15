@@ -311,7 +311,8 @@ export async function submitCoding(
   // required is strictly better than no coding; it must never be harder to
   // give than the required one.
   const codingRequired =
-    args.txn.postedAt >= args.codingRequiredSinceMs &&
+    (args.txn.postedAt >= args.codingRequiredSinceMs ||
+      args.txn.codingRequestedAt != null) &&
     args.txn.flow === "outflow" &&
     args.txn.status !== "excluded" &&
     args.txn.isPersonal !== true;

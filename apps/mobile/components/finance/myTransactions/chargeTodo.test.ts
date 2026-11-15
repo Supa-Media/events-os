@@ -41,6 +41,13 @@ describe("isSpendCharge / codingRequired", () => {
     expect(codingRequired(charge({ postedAt: BEFORE }), SINCE)).toBe(false);
     expect(codingRequired(charge({ postedAt: SINCE }), SINCE)).toBe(true);
   });
+
+  test("unless a manager asked for it, even on a reconciled row", () => {
+    const asked = charge({ postedAt: BEFORE, status: "reconciled", codingRequested: true });
+    expect(codingRequired(asked, SINCE)).toBe(true);
+    expect(chargeTodo(asked, SINCE).kind).toBe("needs_coding");
+    expect(chargeTodo({ ...asked, codingRequested: false }, SINCE).actionable).toBe(false);
+  });
 });
 
 describe("chargeTodo", () => {

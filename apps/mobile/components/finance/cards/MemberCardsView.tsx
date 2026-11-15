@@ -190,6 +190,7 @@ export function MemberCardsView() {
             hasReceipt: t.hasReceipt,
             hasApprovedException: t.hasApprovedException,
             codingStatus: (t as MyTxnRow).codingState,
+            codingRequested: (t as MyTxnRow).codingRequested,
           },
           codingSince,
         ).actionable,

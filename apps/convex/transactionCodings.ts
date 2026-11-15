@@ -604,7 +604,7 @@ export const getForTransaction = query({
     // one was the copy that went missing, and the chase nagged for fees this
     // very screen said needed no coding.
     const requiresCoding =
-      txn.postedAt >= sinceMs &&
+      (txn.postedAt >= sinceMs || txn.codingRequestedAt != null) &&
       txn.flow === "outflow" &&
       txn.status !== "excluded" &&
       txn.isPersonal !== true &&

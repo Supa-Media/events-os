@@ -998,6 +998,7 @@ function ReconcileGrid() {
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const attestBulk = useMutation(api.receiptExceptions.attestBulk);
   const submitBulkCoding = useMutation(api.transactionCodings.submitBulk);
+  const requestCoding = useMutation(api.finances.requestCoding);
   const reassignTransactions = useMutation(api.finances.reassignTransactions);
   const markAsTransfer = useMutation(api.finances.markAsTransfer);
   const markAsRefund = useMutation(api.finances.markAsRefund);
@@ -1693,6 +1694,22 @@ function ReconcileGrid() {
     }
   }
 
+  // Ask for coding on the selection even where policy wouldn't (pre-policy or
+  // already reconciled) — then the person-band Chase reaches those charges.
+  async function bulkRequestCoding() {
+    const res = await run(
+      () => requestCoding({ transactionIds: bulkIds }),
+      { errorTitle: "Couldn't ask for coding" },
+    );
+    if (res) {
+      const skipped = res.skipped > 0 ? ` (${res.skipped} can't carry one)` : "";
+      setNudgeNotice(
+        `Coding requested on ${res.updated} charge${res.updated === 1 ? "" : "s"}${skipped}. Chase the person to remind them.`,
+      );
+      clearSelection();
+    }
+  }
+
   // Acknowledge a whole selection as having no receipts. One attestation per
   // row server-side (`receiptExceptions.attestBulk`), auto-approved for the
   // rows under the org threshold when the caller is a Finance manager — so the
@@ -2298,6 +2315,7 @@ function ReconcileGrid() {
             onMarkRefund={() => setRefundPromptOpen(true)}
             onMarkPayout={() => setPayoutPromptOpen(true)}
             onNoDocumentation={() => setNoDocOpen(true)}
+            onRequestCoding={canNudgeHere ? bulkRequestCoding : undefined}
             // NOT rank-gated here, deliberately. `book.canEdit` (what puts a
             // row in this selection) answers WHICH BOOK, not which rank — this
             // whole bar is rank-optimistic, and a finance viewer pressing "Set
