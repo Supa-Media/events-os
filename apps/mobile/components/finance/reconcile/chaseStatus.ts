@@ -43,3 +43,8 @@ export function chaseStatusLine(s: ChaseFollowUpStatus, now: number): string {
   const told = s.chaserTold ? " · chaser emailed" : "";
   return `${chased} · ${times}, last ${when(s.lastRemindedAt, now)}${told}`;
 }
+
+/** Every chased charge is coded: the sweep stopped the reminders. */
+export function chaseStoppedLine(stoppedAt: number, now: number): string {
+  return `Done, reminders stopped ${when(stoppedAt, now)}`;
+}

@@ -10,8 +10,10 @@
  * charges that still owe something gets ONE follow-up: the same chase email
  * and text, marked as a daily reminder, repeating the manager's reasons and
  * note. A charge drops out the moment it stops owing anything
- * (`chaseOutstandingFor`, the same predicate the chase itself used), and its
- * row is deleted.
+ * (`chaseOutstandingFor`, the same predicate the chase itself used): its row
+ * is stamped `settledAt` and kept `DONE_KEEP_MS` so the Book can say
+ * "Done, reminders stopped" (founder, 2026-11-14: "how do I know that you've
+ * stopped chasing someone"), then deleted.
  *
  * TELLING THE CHASER. Founder, 2026-11-05: "notify me of anyone who hasn't
  * coded their charges with five days of daily reminders and I'll send them a
@@ -66,6 +68,8 @@ export function chasedSameDay(chasedAt: number, now: number): boolean {
 }
 /** Rows read per daily run — far above any real chase backlog. */
 const FOLLOW_UP_SCAN_LIMIT = 2000;
+/** How long a finished chase stays visible as "Done" in the Book. */
+export const DONE_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 /** Follow-ups after which the chaser is told the person still hasn't coded. */
 export const ESCALATE_AFTER_REMINDERS = 5;
 
@@ -137,6 +141,7 @@ export const gather = internalQuery({
   returns: v.object({
     targets: v.array(followUpTargetValidator),
     settledIds: v.array(v.id("codingChaseFollowUps")),
+    purgeIds: v.array(v.id("codingChaseFollowUps")),
   }),
   handler: async (ctx) => {
     const now = Date.now();
@@ -147,10 +152,16 @@ export const gather = internalQuery({
       .take(FOLLOW_UP_SCAN_LIMIT);
 
     const settledIds: Id<"codingChaseFollowUps">[] = [];
+    const purgeIds: Id<"codingChaseFollowUps">[] = [];
     type Target = typeof followUpTargetValidator.type & { latestChase: number };
     const byPerson = new Map<string, Target>();
 
     for (const row of rows) {
+      // Already done: kept only so the Book can say so, then purged.
+      if (row.settledAt != null) {
+        if (now - row.settledAt >= DONE_KEEP_MS) purgeIds.push(row._id);
+        continue;
+      }
       const tr = await ctx.db.get(row.transactionId);
       const outstanding = tr ? chaseOutstandingFor(tr, sinceMs) : null;
       if (!tr || !outstanding) {
@@ -213,23 +224,27 @@ export const gather = internalQuery({
         ...t,
         charges: [...t.charges].sort((a, b) => b.amountCents - a.amountCents),
       }));
-    return { targets, settledIds };
+    return { targets, settledIds, purgeIds };
   },
 });
 
-/** Delete settled rows and stamp the ones just reminded. */
+/** Mark newly settled rows, purge old ones, stamp the ones just reminded. */
 export const finish = internalMutation({
   args: {
     settledIds: v.array(v.id("codingChaseFollowUps")),
+    purgeIds: v.optional(v.array(v.id("codingChaseFollowUps"))),
     remindedIds: v.array(v.id("codingChaseFollowUps")),
     escalatedIds: v.array(v.id("codingChaseFollowUps")),
   },
   returns: v.null(),
-  handler: async (ctx, { settledIds, remindedIds, escalatedIds }) => {
+  handler: async (ctx, { settledIds, purgeIds, remindedIds, escalatedIds }) => {
+    const now = Date.now();
     for (const id of settledIds) {
+      if (await ctx.db.get(id)) await ctx.db.patch(id, { settledAt: now });
+    }
+    for (const id of purgeIds ?? []) {
       if (await ctx.db.get(id)) await ctx.db.delete(id);
     }
-    const now = Date.now();
     for (const id of remindedIds) {
       const row = await ctx.db.get(id);
       if (row) {
@@ -256,8 +271,9 @@ export const sendDaily = internalAction({
     const gathered: {
       targets: FollowUpTarget[];
       settledIds: Id<"codingChaseFollowUps">[];
+      purgeIds: Id<"codingChaseFollowUps">[];
     } = await ctx.runQuery(internal.chaseFollowUps.gather, {});
-    const { targets, settledIds } = gathered;
+    const { targets, settledIds, purgeIds } = gathered;
     const remindedIds: Id<"codingChaseFollowUps">[] = [];
     const escalatedIds: Id<"codingChaseFollowUps">[] = [];
     // chaser email -> person -> what they still owe
@@ -311,6 +327,7 @@ export const sendDaily = internalAction({
 
     await ctx.runMutation(internal.chaseFollowUps.finish, {
       settledIds,
+      purgeIds,
       remindedIds,
       escalatedIds,
     });
