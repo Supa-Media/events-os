@@ -47,7 +47,7 @@
  */
 import { useMemo, useState } from "react";
 import { Text, View, TextInput, Pressable } from "react-native";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
@@ -73,6 +73,7 @@ import { SalesBulkBar } from "../../../components/finance/sales/SalesBulkBar";
 import { SaleDetailModal } from "../../../components/finance/sales/SaleDetailModal";
 import {
   applySelection,
+  canStartRefund,
   facetCounts,
   hasAnyFilter,
   itemLabels,
@@ -144,6 +145,7 @@ function SalesBody() {
   const data = useQuery(api.sales.listSales, chapterId ? { chapterId } : "skip");
   const setSaleItems = useMutation(api.sales.setSaleItems);
   const setSaleEvent = useMutation(api.sales.setSaleEvent);
+  const refundTicketOrder = useAction(api.saleRefunds.refundTicketOrder);
 
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
@@ -166,18 +168,20 @@ function SalesBody() {
   // checked row and then hitting a bulk action would otherwise write to
   // something the user can no longer see — the one bulk-edit failure that is
   // genuinely hard to notice afterwards.
-  const selectedRows = useMemo(
-    () => displayed.filter((r) => r.kind === "in_person" && selected.has(r.id)),
+  const checkedRows = useMemo(
+    () => displayed.filter((r) => selected.has(r.id)),
     [displayed, selected],
   );
-  const bulkBaskets = useMemo(() => sharedBasketOptions(selectedRows), [selectedRows]);
-  // Select-all means "every row I could actually act on". A ticket order is
-  // read-only here — its items and event come from the order — so including it
-  // would arm a bulk action against rows every write would refuse.
-  const editableDisplayed = useMemo(
-    () => displayed.filter((r) => r.kind === "in_person"),
-    [displayed],
+  // Each bulk action acts only on the rows it can: event and items are facts
+  // about an in-person tap (a ticket order already knows both), and a refund
+  // only exists for a Stripe ticket order that isn't already refunded. The bar
+  // names how many rows each action covers, so nothing is skipped silently.
+  const selectedRows = useMemo(
+    () => checkedRows.filter((r) => r.kind === "in_person"),
+    [checkedRows],
   );
+  const refundRows = useMemo(() => checkedRows.filter(canStartRefund), [checkedRows]);
+  const bulkBaskets = useMemo(() => sharedBasketOptions(selectedRows), [selectedRows]);
 
   function clearSelection() {
     setSelected(new Set());
@@ -192,9 +196,9 @@ function SalesBody() {
   }
   function toggleAll() {
     setSelected((prev) =>
-      editableDisplayed.every((r) => prev.has(r.id))
+      displayed.every((r) => prev.has(r.id))
         ? new Set()
-        : new Set(editableDisplayed.map((r) => r.id)),
+        : new Set(displayed.map((r) => r.id)),
     );
   }
   function toggleFilter<K extends keyof SalesFilters>(group: K, value: string) {
@@ -241,6 +245,32 @@ function SalesBody() {
       { errorTitle: "Couldn't set the event" },
     );
     clearSelection();
+  }
+  /**
+   * Refund every selected Stripe ticket order, one at a time so each gets its
+   * own attempt row and Stripe idempotency key, and one failure doesn't stop
+   * the rest. Returns the tally the bar shows.
+   */
+  async function bulkRefund(
+    reason: string,
+  ): Promise<{ refunded: number; failed: number }> {
+    let refunded = 0;
+    let failed = 0;
+    for (const r of refundRows) {
+      const res = await run(
+        () =>
+          refundTicketOrder({
+            orderId: r.id as Id<"ticketOrders">,
+            reason: reason.trim() || undefined,
+          }),
+        { errorTitle: `Couldn't refund ${r.buyerName ?? "a sale"}` },
+      );
+      if (res && (res.status === "succeeded" || res.status === "pending")) refunded++;
+      else failed++;
+    }
+    // Selection kept so the bar can show the tally; the refunded rows drop out
+    // of its Refund count on their own as the list updates.
+    return { refunded, failed };
   }
   async function bulkSetItems(basketKey: string | null) {
     const ids = selectedRows.map((r) => r.id);
@@ -476,14 +506,17 @@ function SalesBody() {
           )}
         </Narrow>
 
-        {selectedRows.length > 0 && data?.canEdit ? (
+        {checkedRows.length > 0 && data?.canEdit ? (
           <SalesBulkBar
-            count={selectedRows.length}
+            count={checkedRows.length}
+            inPersonCount={selectedRows.length}
             events={data.events}
             basketOptions={bulkBaskets}
             sharedGrossCents={selectedRows[0]?.grossCents ?? null}
             onSetEvent={(eventId) => void bulkSetEvent(eventId)}
             onSetItems={(basketKey) => void bulkSetItems(basketKey)}
+            refundRows={data.canRefund ? refundRows : []}
+            onRefund={bulkRefund}
             onClear={clearSelection}
           />
         ) : null}
