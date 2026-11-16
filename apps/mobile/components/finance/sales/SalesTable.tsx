@@ -5,7 +5,7 @@
  * `GridHeaderCell` header row, per-row `Cell`-wrapped cells, multi-select
  * driving a bulk bar, and a detail affordance at the end of the row.
  *
- * Columns: [☐] Date · Event▾ · Items▾ · Gross · Fee · Net · Payment · [detail]
+ * Columns: [☐] Date · Buyer · Event▾ · Items▾ · Gross · Fee · Net · Payment · [detail]
  *
  * ── WHAT IT DELIBERATELY DOESN'T BORROW FROM RECONCILE ──────────────────────
  * A sale is not a bank charge, and copying the whole pattern would say things
@@ -72,6 +72,9 @@ const NUM = { fontVariant: ["tabular-nums" as const] };
 const DEFAULT_COLS = {
   check: 40,
   date: 118, // fits "Dec 06, 2025"
+  // Who paid, where the rail records it — a ticket order carries the
+  // purchaser; a card tap at a snack table doesn't, and says so.
+  buyer: 160,
   event: 178,
   // The widest column on purpose: a resolved basket can read "2 × $2 item +
   // Water", and an unresolved one carries its "3 readings" hint alongside.
@@ -146,6 +149,7 @@ export function SalesTable({
               ) : null}
             </View>
             <GridHeaderCell label="Date" width={widths.date} onResizeStart={startResize("date")} />
+            <GridHeaderCell label="Buyer" width={widths.buyer} onResizeStart={startResize("buyer")} />
             <GridHeaderCell label="Event" width={widths.event} onResizeStart={startResize("event")} />
             <View style={{ width: widths.items, flexGrow: 1 }}>
               <GridHeaderCell label="Items" width={widths.items} onResizeStart={startResize("items")} />
@@ -231,6 +235,18 @@ function SaleGridRow({
         <Text className="px-2 text-sm text-ink" style={NUM} numberOfLines={1}>
           {shortDate(row.soldAt)}
         </Text>
+      </Cell>
+
+      <Cell width={widths.buyer}>
+        {row.buyerName ? (
+          <Text className="flex-1 px-2 text-sm text-ink" numberOfLines={1}>
+            {row.buyerName}
+          </Text>
+        ) : (
+          <Text className="flex-1 px-2 text-sm text-faint" numberOfLines={1}>
+            {row.kind === "in_person" ? "In person" : "—"}
+          </Text>
+        )}
       </Cell>
 
       <Cell width={widths.event}>
