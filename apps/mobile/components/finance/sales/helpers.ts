@@ -299,3 +299,36 @@ export const ITEM_SOURCE_LABELS: Record<string, string> = {
   unresolved: "The amount is all the card reader recorded",
   ticket_order: "Sold as tickets — the order recorded exactly what it sold",
 };
+
+// ── Refunds ──────────────────────────────────────────────────────────────────
+export type RefundStatus = NonNullable<SaleRow["refund"]>["status"];
+
+/** The row's money went back (or is on its way) — listed, not counted. */
+export function isRefunded(row: Pick<SaleRow, "refund">): boolean {
+  return row.refund?.status === "pending" || row.refund?.status === "succeeded";
+}
+
+/** May a refund be sent (or reissued) for this row right now? Power aside. */
+export function canStartRefund(row: Pick<SaleRow, "refund" | "refundable">): boolean {
+  if (!row.refundable) return false;
+  const s = row.refund?.status;
+  return s === undefined || s === "failed" || s === "canceled";
+}
+
+/** The grid's one-word face for a refund attempt. */
+export const REFUND_STATUS_SHORT: Record<RefundStatus, string> = {
+  requested: "Refunding…",
+  pending: "Refund pending",
+  succeeded: "Refunded",
+  failed: "Refund failed",
+  canceled: "Refund canceled",
+};
+
+/** The detail panel's sentence for a refund attempt. */
+export const REFUND_STATUS_LONG: Record<RefundStatus, string> = {
+  requested: "Sent to Stripe, no answer yet. Check with Stripe to finish it.",
+  pending: "Stripe accepted it and is returning the money to the card.",
+  succeeded: "Refunded to the buyer's card.",
+  failed: "Stripe couldn't return the money. The order is still paid, so you can reissue it.",
+  canceled: "The refund was canceled. The order is still paid, so you can reissue it.",
+};

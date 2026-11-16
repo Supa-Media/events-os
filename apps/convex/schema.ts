@@ -61,6 +61,7 @@ import {
   doorGrants,
   sales,
 } from "./schema/ticketing";
+import { saleRefunds } from "./schema/saleRefunds";
 import {
   funds,
   budgetCategories,
@@ -344,6 +345,8 @@ const schema = defineSchema({
   guestTeams,
   doorGrants,
   sales,
+  // A refund issued (or reissued) from the Sales page — one row per attempt.
+  saleRefunds,
   donations,
   eventComments,
   pageReactions,

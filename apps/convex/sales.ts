@@ -63,6 +63,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { financeRoleAtLeast } from "@events-os/shared";
 import { requireFinanceRole } from "./lib/finance";
+import { hasSaleRefund } from "./lib/salesRefundAccess";
 import { logFinanceAudit } from "./lib/financeAuditLog";
 import {
   basketOptions,
@@ -90,6 +91,23 @@ const saleItemValidator = v.object({
    *  which product it was is genuinely ambiguous. */
   candidates: v.array(v.string()),
 });
+
+/** A row's money has gone back to the buyer (or is on its way). */
+function isRefunded(row: { refund: { status: string } | null }): boolean {
+  return row.refund?.status === "pending" || row.refund?.status === "succeeded";
+}
+
+/** The newest refund attempt, shaped for a row. */
+function refundView(r: Doc<"saleRefunds"> | undefined): SaleRow["refund"] {
+  if (!r) return null;
+  return {
+    id: r._id,
+    status: r.status,
+    amountCents: r.amountCents,
+    at: r.updatedAt,
+    failureReason: r.failureReason ?? null,
+  };
+}
 
 /** One row of the Sales grid, whichever rail sold it. */
 type SaleRow = Infer<typeof saleRowValidator>;
@@ -154,6 +172,30 @@ const saleRowValidator = v.object({
   itemsKey: v.union(v.string(), v.null()),
   /** Whether a catalogue is defined for this sale's day at all. */
   hasCatalog: v.boolean(),
+  /**
+   * The newest refund attempt made from this page (`saleRefunds.ts`), or null.
+   * Only a ticket order can carry one. A row whose refund is live (`pending` /
+   * `succeeded`) is shown but is no longer revenue — `summary` leaves it out.
+   */
+  refund: v.union(
+    v.object({
+      id: v.id("saleRefunds"),
+      status: v.union(
+        v.literal("requested"),
+        v.literal("pending"),
+        v.literal("succeeded"),
+        v.literal("failed"),
+        v.literal("canceled"),
+      ),
+      amountCents: v.number(),
+      at: v.number(),
+      failureReason: v.union(v.string(), v.null()),
+    }),
+    v.null(),
+  ),
+  /** Whether a refund can be sent from here at all: a Stripe-paid ticket
+   *  order. The caller's power is the separate top-level `canRefund`. */
+  refundable: v.boolean(),
 });
 
 /**
@@ -204,6 +246,9 @@ export const listSales = query({
        *  monthly line in Reconcile rather than per order. Without this flag the
        *  net would silently read as if tickets cost nothing to process. */
       ticketFeesBookedMonthly: v.boolean(),
+      /** Ticket orders refunded from this page — listed, not counted above. */
+      refundedCount: v.number(),
+      refundedCents: v.number(),
     }),
     /** The chapter's events, newest first — the Event cell's options. Every
      *  event, not just the ones already carrying sales: attributing an ORPHAN
@@ -223,6 +268,8 @@ export const listSales = query({
      *  read-only on its own and no affordance appears that the mutation would
      *  then refuse. */
     canEdit: v.boolean(),
+    /** Whether this caller may send refunds (`lib/salesRefundAccess.ts`). */
+    canRefund: v.boolean(),
     truncated: v.boolean(),
   }),
   handler: async (ctx, { chapterId, eventId }) => {
@@ -280,6 +327,8 @@ export const listSales = query({
       itemOptions: optionsFor(r.soldAt, r.grossCents),
       itemsKey: itemsToKey(r.items),
       hasCatalog: catalogForDay(dayISOFor(r.soldAt)) !== null,
+      refund: null,
+      refundable: false,
     }));
 
     // ── Ticket orders, as sales ────────────────────────────────────────────
@@ -301,8 +350,28 @@ export const listSales = query({
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .take(SALES_SCAN_LIMIT);
     const ticketsTruncated = ticketOrders.length === SALES_SCAN_LIMIT;
+
+    // The newest refund attempt per order. A `refunded` order stays on the
+    // page ONLY when it was refunded from here — that is the row a desk needs
+    // to see the refund on (and reissue it, if Stripe later failed it). An
+    // order refunded some other way never had an attempt, so it stays out,
+    // exactly as before.
+    const refundRows = await ctx.db
+      .query("saleRefunds")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(SALES_SCAN_LIMIT);
+    const latestRefund = new Map<string, Doc<"saleRefunds">>();
+    for (const r of refundRows) {
+      const prev = latestRefund.get(r.ticketOrderId as string);
+      if (!prev || r.createdAt > prev.createdAt) latestRefund.set(r.ticketOrderId as string, r);
+    }
+
     const ticketRows: SaleRow[] = ticketOrders
-      .filter((o) => o.status === "paid")
+      .filter(
+        (o) =>
+          o.status === "paid" ||
+          (o.status === "refunded" && latestRefund.has(o._id as string)),
+      )
       .filter((o) => (eventId ? o.eventId === eventId : true))
       .map((o: Doc<"ticketOrders">) => ({
         kind: "ticket" as const,
@@ -337,12 +406,21 @@ export const listSales = query({
         itemOptions: [],
         itemsKey: null,
         hasCatalog: false,
+        refund: refundView(latestRefund.get(o._id as string)),
+        refundable: !!o.stripePaymentIntentId && o.totalCents > 0,
       }));
 
     const sales = [...inPersonRows, ...ticketRows].sort((a, b) => b.soldAt - a.soldAt);
 
-    const grossCents = sales.reduce((a, s) => a + s.grossCents, 0);
-    const feeCents = sales.reduce((a, s) => a + s.feeCents, 0);
+    // Revenue is what was NOT given back. A refunded row is listed (so the
+    // refund is visible) but must not count, or this page would sit above the
+    // accounts page, which already drops `refunded` orders.
+    const counted = sales.filter((s) => !isRefunded(s));
+    const refunded = sales.filter(isRefunded);
+    const countedTickets = ticketRows.filter((s) => !isRefunded(s));
+
+    const grossCents = counted.reduce((a, s) => a + s.grossCents, 0);
+    const feeCents = counted.reduce((a, s) => a + s.feeCents, 0);
     // "Unresolved" is an in-person concept — it means the amount alone couldn't
     // be turned back into a basket. A ticket order is never unresolved, so it
     // must not dilute the count the bookkeeper works through.
@@ -351,16 +429,18 @@ export const listSales = query({
     return {
       sales,
       summary: {
-        count: sales.length,
+        count: counted.length,
         grossCents,
         feeCents,
         netCents: grossCents - feeCents,
-        resolvedCount: sales.length - unresolved.length,
+        resolvedCount: counted.length - unresolved.length,
         unresolvedCount: unresolved.length,
         unresolvedCents: unresolved.reduce((a, s) => a + s.grossCents, 0),
         inPersonGrossCents: inPersonRows.reduce((a, s) => a + s.grossCents, 0),
-        ticketGrossCents: ticketRows.reduce((a, s) => a + s.grossCents, 0),
-        ticketFeesBookedMonthly: ticketRows.length > 0,
+        ticketGrossCents: countedTickets.reduce((a, s) => a + s.grossCents, 0),
+        ticketFeesBookedMonthly: countedTickets.length > 0,
+        refundedCount: refunded.length,
+        refundedCents: refunded.reduce((a, s) => a + s.grossCents, 0),
       },
       events: chapterEvents
         .slice()
@@ -371,6 +451,7 @@ export const listSales = query({
           eventDate: e.eventDate ?? null,
         })),
       canEdit: financeRoleAtLeast(access.role, "bookkeeper"),
+      canRefund: await hasSaleRefund(ctx, chapterId),
       truncated: truncated || ticketsTruncated,
     };
   },
