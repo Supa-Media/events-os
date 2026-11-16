@@ -132,6 +132,7 @@ export function searchHaystack(row: SaleRow): string {
     row.items.map((i) => i.label).join(" "),
     row.items.flatMap((i) => i.candidates).join(" "),
     row.eventName ?? "unattributed",
+    row.buyerName ?? "",
     row.paymentRef,
     row.itemOptions.map((o) => o.label).join(" "),
     formatCents(row.grossCents),

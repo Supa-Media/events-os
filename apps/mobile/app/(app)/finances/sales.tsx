@@ -396,7 +396,7 @@ function SalesBody() {
                     onChangeText={setQuery}
                     onFocus={() => setSearchFocused(true)}
                     onBlur={() => setSearchFocused(false)}
-                    placeholder="Search item, event, amount, payment…"
+                    placeholder="Search buyer, item, event, amount, payment…"
                     placeholderTextColor={colors.faint}
                     autoCapitalize="none"
                     autoCorrect={false}
