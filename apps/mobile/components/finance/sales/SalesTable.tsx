@@ -116,10 +116,10 @@ export function SalesTable({
     SALES_COLUMNS_STORAGE_KEY,
     DEFAULT_COLS,
   );
-  // Only in-person rows are selectable — a ticket order is read-only here, so
-  // a header checkbox that appeared to cover it would be lying.
-  const editable = rows.filter((r) => r.kind === "in_person");
-  const allSelected = editable.length > 0 && editable.every((r) => selected.has(r.id));
+  // Every row is selectable. The bulk bar works out what each action can
+  // touch (event/items: in-person taps; refund: Stripe ticket orders) and says
+  // so, rather than the grid hiding rows from the selection.
+  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
   const width = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
 
   return (
@@ -220,9 +220,7 @@ function SaleGridRow({
       } ${isLast ? "border-b-0" : ""}`}
     >
       <View style={{ width: widths.check }} className="items-center justify-center">
-        {/* A ticket order carries no checkbox: neither bulk action applies to
-            it, so offering one would arm a write the server refuses. */}
-        {canEdit && editable ? (
+        {canEdit ? (
           <Checkbox
             checked={selected}
             onPress={onToggle}
