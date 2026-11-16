@@ -418,6 +418,7 @@ import type * as responsibilities from "../responsibilities.js";
 import type * as reverseExcludedSettlementLoop from "../reverseExcludedSettlementLoop.js";
 import type * as roleAssignments from "../roleAssignments.js";
 import type * as roles from "../roles.js";
+import type * as saleRefundNotices from "../saleRefundNotices.js";
 import type * as saleRefunds from "../saleRefunds.js";
 import type * as sales from "../sales.js";
 import type * as salesDonations from "../salesDonations.js";
@@ -921,6 +922,7 @@ declare const fullApi: ApiFromModules<{
   reverseExcludedSettlementLoop: typeof reverseExcludedSettlementLoop;
   roleAssignments: typeof roleAssignments;
   roles: typeof roles;
+  saleRefundNotices: typeof saleRefundNotices;
   saleRefunds: typeof saleRefunds;
   sales: typeof sales;
   salesDonations: typeof salesDonations;
