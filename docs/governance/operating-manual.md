@@ -519,6 +519,12 @@ involved, and the software enforces it where it can.
 | Executive Director compensation | — | Board, under Bylaws § 12.6 |
 | Related-party transaction | — | Disinterested directors only, Bylaws § 12.4 |
 
+**Refunds are the deliberate exception.** A ticket refund, issued from
+Finances → Sales, needs the finance manager role on that chapter and no second
+person. A refund can only return money to the card that paid it, so there is
+no way for it to benefit the person who sends it — which is the risk the rule
+above exists for. Every attempt is recorded with who sent it, when, and why.
+
 The campaign rule is worth stating plainly: the Executive Director can compose a
 campaign, but somebody else — the Marketing Director or the Financial Manager —
 must approve the send. Nobody sends to the whole list alone.

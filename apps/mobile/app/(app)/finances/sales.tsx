@@ -350,6 +350,16 @@ function SalesBody() {
                   {/* Say it rather than let the net imply tickets process for
                       free — their Stripe fees are real, they're just booked as
                       one monthly line in Reconcile instead of per order. */}
+                  {/* Refunded orders stay listed so the refund is visible (and
+                      can be reissued if Stripe fails it), but they are not
+                      revenue, so none of the figures above include them. */}
+                  {summary.refundedCount > 0 ? (
+                    <Text className="mt-1 text-2xs text-faint">
+                      {`${summary.refundedCount} refunded (${formatCents(
+                        summary.refundedCents,
+                      )}) listed below but left out of these totals.`}
+                    </Text>
+                  ) : null}
                   {summary.ticketFeesBookedMonthly ? (
                     <Text className="mt-1 text-2xs text-faint">
                       Stripe fees above cover the in-person taps. Ticket
@@ -519,6 +529,8 @@ function SalesBody() {
           // Re-read from the live rows so an edit made behind the modal is
           // reflected in it; fall back to the captured row if it filtered away.
           row={rows.find((r) => r.id === detail.id) ?? detail}
+          canRefund={data?.canRefund ?? false}
+          run={run}
           onClose={() => setDetail(null)}
         />
       ) : null}

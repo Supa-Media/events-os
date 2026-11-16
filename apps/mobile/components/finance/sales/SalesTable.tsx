@@ -55,7 +55,9 @@ import {
 import { colors } from "../../../lib/theme";
 import {
   formatCents,
+  isRefunded,
   itemsLabel,
+  REFUND_STATUS_SHORT,
   shortDate,
   UNATTRIBUTED,
   type BasketOption,
@@ -119,8 +121,16 @@ export function SalesTable({
 
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View style={{ width: Math.max(width, 320) }}>
+      {/* `flexGrow` on the content + `minWidth` (not `width`) on the grid: on a
+          screen wider than the columns' total, the grid fills the card and the
+          Items column takes the slack, instead of the rows stopping short of
+          the card's right edge. Narrower than the total, it scrolls as before. */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ flexGrow: 1 }}
+      >
+        <View style={{ minWidth: Math.max(width, 320), flexGrow: 1 }}>
           {/* Column header */}
           <View className="flex-row items-center border-b border-border bg-sunken">
             <View
@@ -137,7 +147,9 @@ export function SalesTable({
             </View>
             <GridHeaderCell label="Date" width={widths.date} onResizeStart={startResize("date")} />
             <GridHeaderCell label="Event" width={widths.event} onResizeStart={startResize("event")} />
-            <GridHeaderCell label="Items" width={widths.items} onResizeStart={startResize("items")} />
+            <View style={{ width: widths.items, flexGrow: 1 }}>
+              <GridHeaderCell label="Items" width={widths.items} onResizeStart={startResize("items")} />
+            </View>
             <GridHeaderCell label="Gross" width={widths.gross} onResizeStart={startResize("gross")} />
             <GridHeaderCell label="Fee" width={widths.fee} onResizeStart={startResize("fee")} />
             <GridHeaderCell label="Banked" width={widths.net} onResizeStart={startResize("net")} />
@@ -195,6 +207,8 @@ function SaleGridRow({
   widths: Record<ColKey, number>;
 }) {
   const editable = row.kind === "in_person";
+  const refunded = isRefunded(row);
+  const refundLabel = row.refund ? REFUND_STATUS_SHORT[row.refund.status] : null;
   return (
     <View
       className={`flex-row items-stretch border-b border-border ${
@@ -229,12 +243,19 @@ function SaleGridRow({
         />
       </Cell>
 
-      <Cell width={widths.items}>
+      <Cell width={widths.items} grow>
         <BasketCell row={row} canEdit={canEdit && editable} onChange={onSetItems} />
       </Cell>
 
       <Cell width={widths.gross}>
-        <Text className="flex-1 px-2 text-right text-sm font-semibold text-ink" style={NUM}>
+        {/* Struck through once refunded: the sale happened, the money didn't
+            stay. The summary above already leaves it out. */}
+        <Text
+          className={`flex-1 px-2 text-right text-sm ${
+            refunded ? "text-faint line-through" : "font-semibold text-ink"
+          }`}
+          style={NUM}
+        >
           {formatCents(row.grossCents)}
         </Text>
       </Cell>
@@ -247,9 +268,20 @@ function SaleGridRow({
         </Text>
       </Cell>
       <Cell width={widths.net}>
-        <Text className="flex-1 px-2 text-right text-sm text-ink" style={NUM}>
-          {formatCents(row.netCents)}
-        </Text>
+        {refundLabel ? (
+          <Text
+            className={`flex-1 px-2 text-right text-2xs font-semibold ${
+              refunded ? "text-muted" : "text-warn"
+            }`}
+            numberOfLines={1}
+          >
+            {refundLabel}
+          </Text>
+        ) : (
+          <Text className="flex-1 px-2 text-right text-sm text-ink" style={NUM}>
+            {formatCents(row.netCents)}
+          </Text>
+        )}
       </Cell>
 
       <Cell width={widths.payment}>
@@ -279,9 +311,30 @@ function SaleGridRow({
   );
 }
 
-function Cell({ width, children }: { width: number; children: React.ReactNode }) {
+/**
+ * One fixed-width grid cell. `overflow: "hidden"` is load-bearing — the same
+ * fix Reconcile's `Cell` carries (see `finance/reconcile/ReconcileList.tsx`).
+ * RN-Web gives a sibling `View` `flexShrink: 0`, so a long event chip ("Brooklyn's
+ * Got Talent (Christian Edition)") painted past its column and the Items text
+ * sat on top of it. The chip ellipsizes itself (`OptionTag`'s `max-w-full`);
+ * this clip is what keeps anything else from reaching a neighbour.
+ *
+ * `grow` lets ONE column absorb the spare width on a wide screen.
+ */
+function Cell({
+  width,
+  grow = false,
+  children,
+}: {
+  width: number;
+  grow?: boolean;
+  children: React.ReactNode;
+}) {
   return (
-    <View style={{ width }} className="flex-row items-center border-r border-border/60">
+    <View
+      style={{ width, overflow: "hidden", ...(grow ? { flexGrow: 1 } : null) }}
+      className="flex-row items-center border-r border-border/60"
+    >
       {children}
     </View>
   );
@@ -311,12 +364,16 @@ function EventCell({
   const { ref, anchor, visible, open, close } = useAnchor();
 
   if (!canEdit) {
+    // `flex-1 min-w-0`: the chip's `max-w-full` caps it at THIS box, so the box
+    // has to be the column's width — a content-sized box let the chip run on.
     return name ? (
-      <View className="px-2">
+      <View className="min-w-0 flex-1 px-2">
         <OptionTag label={name} />
       </View>
     ) : (
-      <Text className="px-2 text-sm text-faint">Unattributed</Text>
+      <Text className="flex-1 px-2 text-sm text-faint" numberOfLines={1}>
+        Unattributed
+      </Text>
     );
   }
 
@@ -325,7 +382,7 @@ function EventCell({
       <Pressable
         ref={ref}
         onPress={open}
-        className="flex-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+        className="min-w-0 flex-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
       >
         {name ? (
           <OptionTag label={name} />
@@ -441,7 +498,7 @@ function BasketCell({
       <Pressable
         ref={ref}
         onPress={open}
-        className="flex-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+        className="min-w-0 flex-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
       >
         {face}
       </Pressable>
