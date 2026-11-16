@@ -328,8 +328,8 @@ export const REFUND_STATUS_SHORT: Record<RefundStatus, string> = {
 /** The detail panel's sentence for a refund attempt. */
 export const REFUND_STATUS_LONG: Record<RefundStatus, string> = {
   requested: "Sent to Stripe, no answer yet. Check with Stripe to finish it.",
-  pending: "Stripe accepted it and is returning the money to the card.",
-  succeeded: "Refunded to the buyer's card.",
+  pending: "Stripe accepted it and is returning the money to the card. The buyer was emailed.",
+  succeeded: "Refunded to the buyer's card. The buyer was emailed that it takes 5–10 business days to show up.",
   failed: "Stripe couldn't return the money. The order is still paid, so you can reissue it.",
   canceled: "The refund was canceled. The order is still paid, so you can reissue it.",
 };

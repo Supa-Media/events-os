@@ -4,6 +4,7 @@ import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { refundEmailHtml, refundSmsBody } from "../saleRefundNotices";
 
 /**
  * Refunds from the Sales page (`saleRefunds.ts`). What matters: only a finance
@@ -257,5 +258,42 @@ describe("refundTicketOrder", () => {
       s.as.action(api.saleRefunds.refundTicketOrder, { orderId }),
     ).rejects.toThrow(/where it was paid/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("refund notice", () => {
+  test("tells the buyer the amount, the card, and 5–10 business days — never 'reply'", () => {
+    const html = refundEmailHtml({
+      name: "Charisma Stevens",
+      amountCents: 3000,
+      eventName: "Brooklyn's Got Talent",
+      slug: null,
+    });
+    expect(html).toContain("$30.00");
+    expect(html).toContain("5–10 business days");
+    expect(html).toContain("card you used");
+    expect(html.toLowerCase()).not.toContain("reply");
+    const sms = refundSmsBody({ amountCents: 3000, eventName: "Brooklyn's Got Talent" });
+    expect(sms).toContain("$30.00");
+    expect(sms).toContain("5–10 business days");
+  });
+
+  test("a live refund schedules the notice; a refused one doesn't", async () => {
+    const s = await setupWithRole("manager");
+    const { orderId } = await seedPaidOrder(s);
+    stubStripe({ ok: false });
+    await s.as.action(api.saleRefunds.refundTicketOrder, { orderId });
+    const countNotices = () =>
+      run(s.t, async (ctx) =>
+        (await ctx.db.system.query("_scheduled_functions").collect()).filter((f) =>
+          f.name.includes("sendRefundNotice"),
+        ).length,
+      );
+    expect(await countNotices()).toBe(0);
+
+    vi.unstubAllGlobals();
+    stubStripe({ ok: true });
+    await s.as.action(api.saleRefunds.refundTicketOrder, { orderId });
+    expect(await countNotices()).toBe(1);
   });
 });

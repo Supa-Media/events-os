@@ -33,6 +33,9 @@
  * leaves the order `paid`, and the Sales page then offers "Reissue refund",
  * which is simply a new attempt.
  *
+ * When a refund goes live the buyer is emailed (and texted, if they gave a
+ * phone) that it's on its way back to their card — `saleRefundNotices.ts`.
+ *
  * Refunds only the ticket subtotal (`totalCents`). An add-on gift in the same
  * charge is giving, not a sale, and stays a gift.
  */
@@ -114,6 +117,12 @@ async function applyRefundEffects(ctx: MutationCtx, refund: Doc<"saleRefunds">) 
     effectsApplied: true,
     voidedTicketIds: voided,
     updatedAt: Date.now(),
+  });
+  // Tell the buyer: amount, card, 5–10 business days (`saleRefundNotices.ts`).
+  // Here rather than in the action so it fires exactly when the refund first
+  // goes live — from the first attempt, a reissue, or a "Check with Stripe".
+  await ctx.scheduler.runAfter(0, internal.saleRefundNotices.sendRefundNotice, {
+    refundId: refund._id,
   });
 }
 

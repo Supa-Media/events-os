@@ -24,7 +24,9 @@ export const smsUsageEvents = defineTable({
   // (`blasts.chapterId`); a verification text derives its chapter from the
   // RSVP's event when available, else falls back to "central".
   chapterId: v.union(v.id("chapters"), v.literal("central")),
-  purpose: v.union(v.literal("blast"), v.literal("verification")),
+  // "notice": a one-off transactional text about the guest's own order, e.g.
+  // a refund (`saleRefundNotices.ts`).
+  purpose: v.union(v.literal("blast"), v.literal("verification"), v.literal("notice")),
   blastId: v.optional(v.id("blasts")),
   eventId: v.optional(v.id("events")),
   // Last 4 digits of the E.164 number — enough to spot-check without storing

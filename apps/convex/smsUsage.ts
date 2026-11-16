@@ -19,7 +19,7 @@ import { isSuperuser } from "./lib/superuser";
 export const recordUsageEvent = internalMutation({
   args: {
     chapterId: v.union(v.id("chapters"), v.literal("central")),
-    purpose: v.union(v.literal("blast"), v.literal("verification")),
+    purpose: v.union(v.literal("blast"), v.literal("verification"), v.literal("notice")),
     blastId: v.optional(v.id("blasts")),
     eventId: v.optional(v.id("events")),
     phoneLast4: v.string(),
@@ -66,7 +66,7 @@ type PurposeTotals = { segments: number; costUsdMicros: number };
 type MonthTotals = {
   segments: number;
   costUsdMicros: number;
-  byPurpose: { blast: PurposeTotals; verification: PurposeTotals };
+  byPurpose: { blast: PurposeTotals; verification: PurposeTotals; notice: PurposeTotals };
 };
 
 function emptyMonthTotals(): MonthTotals {
@@ -76,6 +76,7 @@ function emptyMonthTotals(): MonthTotals {
     byPurpose: {
       blast: { segments: 0, costUsdMicros: 0 },
       verification: { segments: 0, costUsdMicros: 0 },
+      notice: { segments: 0, costUsdMicros: 0 },
     },
   };
 }
@@ -103,6 +104,7 @@ const monthTotalsValidator = v.object({
   byPurpose: v.object({
     blast: v.object({ segments: v.number(), costUsdMicros: v.number() }),
     verification: v.object({ segments: v.number(), costUsdMicros: v.number() }),
+    notice: v.object({ segments: v.number(), costUsdMicros: v.number() }),
   }),
 });
 
