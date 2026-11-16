@@ -880,6 +880,58 @@ export function listingRegions(location: string): ListingRegion[] {
   return named;
 }
 
+/**
+ * The region a CHAPTER recruits for, read from its name or slug — "New York"
+ * is `nyc`, "DMV" is `dmv`. `null` for a chapter that names no listing region
+ * (Philly, Ohio today): unlike `listingRegions` there is no "everywhere"
+ * fallback, because this decides whose applications a chapter's
+ * `hiring.view` reaches, and a chapter with no postings of its own should not
+ * be handed every city's applicants.
+ */
+export function chapterListingRegion(chapter: {
+  name: string;
+  slug?: string;
+}): ListingRegion | null {
+  const text = `${chapter.name} ${(chapter.slug ?? "").replace(/-/g, " ")}`;
+  return LISTING_REGIONS.find((r) => REGION_PATTERNS[r].test(text)) ?? null;
+}
+
+/**
+ * Whether an application is in reach of a CHAPTER-scoped `hiring.view`
+ * holder whose chapter recruits for `region`.
+ *
+ * In reach when the role they applied for is in that region, when any other
+ * role they ticked is, or when they said they're open to other roles at all —
+ * the last because a chapter filling a seat should see the people who put
+ * their hand up for "whatever comes up", wherever they first applied.
+ *
+ * `regionsOfRole` returns the regions of a role slug (from its listing's
+ * location), or `null` when no listing exists any more — then the role title
+ * the file snapshotted is read instead, with no "everywhere" fallback.
+ */
+export function applicationInChapterReach(
+  app: {
+    roleSlug: string;
+    roleTitle: string;
+    openToOtherRoles?: boolean;
+    otherRoles?: { slug: string; title: string }[];
+  },
+  region: ListingRegion | null,
+  regionsOfRole: (slug: string) => readonly ListingRegion[] | null,
+): boolean {
+  if (app.openToOtherRoles === true) return true;
+  if (region === null) return false;
+  const roles = [
+    { slug: app.roleSlug, title: app.roleTitle },
+    ...(app.otherRoles ?? []),
+  ];
+  return roles.some((role) => {
+    const regions = regionsOfRole(role.slug);
+    if (regions) return regions.includes(region);
+    return REGION_PATTERNS[region].test(role.title);
+  });
+}
+
 // ── The listing as public content (the /team wire shape) ─────────────────────
 
 /**

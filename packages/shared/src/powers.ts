@@ -419,19 +419,26 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
    *  without also being able to close the file. A People Associate holds
    *  `hiring.edit`; only the People Director and the ED hold the call.
    *
-   *  Central-scope only (`scope: "central"` on all three): the org runs ONE
-   *  funnel with one standard — "one pipeline, one standard, someone who can
-   *  say yes, no, why, or not now" — even for a role that will sit in a
-   *  chapter. If a chapter ever runs its own intake, that is a new area here,
-   *  not a widening of these. */
+   *  The org runs ONE funnel with one standard — "one pipeline, one
+   *  standard, someone who can say yes, no, why, or not now" — even for a
+   *  role that will sit in a chapter. So `hiring.edit` and `hiring.approve`
+   *  are central-scope only: nobody runs a candidate or makes the call from a
+   *  chapter seat.
+   *
+   *  `hiring.view` is NOT central-only, since 2026-11-16 (founder: "make sure
+   *  the NYC chapter director can see the recruiting tab and all the people
+   *  that applied for nyc roles or open to other roles"). Held at a chapter
+   *  scope it READS that chapter's slice of the one funnel: applications for
+   *  roles in the chapter's city, plus everyone open to other roles (scope
+   *  rule 1 — `lib/hiringAccess.ts` draws the slice). Volunteer signups, the
+   *  listings manager and the form editor stay central-only reads. */
   "hiring.view": {
     id: "hiring.view",
     domain: "hiring",
     action: "view",
     label: "See the hiring pipeline",
     description:
-      "Read applications, interview rubrics, and trial reviews on the Hiring desk.",
-    scope: "central",
+      "Read applications, interview rubrics, and trial reviews on the Hiring desk. At a chapter: applications for that chapter's city, plus anyone open to other roles.",
   },
   "hiring.edit": {
     id: "hiring.edit",

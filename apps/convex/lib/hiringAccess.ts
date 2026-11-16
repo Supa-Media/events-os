@@ -18,19 +18,30 @@
  * Director isn't locked out of their own pipeline; the split exists to stop an
  * associate closing a file, not to stop a Director running one.
  *
- * CENTRAL ONLY. Unlike `givingAccess.ts` — whose chapter-scope reach is the
- * point, since a chapter treasurer stewards their own donors — hiring has no
- * per-chapter scope at all. One funnel, one standard, for roles central and
- * chapter alike. A chapter-scoped hiring grant reaches nothing, which is what
- * `scope: "central"` on all three powers already tells the org chart.
+ * CENTRAL, with one read-only exception. One funnel, one standard, for roles
+ * central and chapter alike: running and deciding (`hiring.edit`,
+ * `hiring.approve`) are central-scope only, and a chapter grant of either
+ * reaches nothing. `hiring.view` held at a CHAPTER scope (since 2026-11-16 —
+ * a Chapter Director sees who is applying to their city) reads that chapter's
+ * slice of the APPLICATIONS only: files for roles in the chapter's city, plus
+ * everyone open to other roles (`applicationInChapterReach` in shared). That
+ * reach is `canViewApplications`; `canView` stays the whole desk — volunteer
+ * signups, the listings manager, the application form — and is central-only.
  *
  * Every refusal throws `ConvexError({ code, message })` (never a plain
  * `Error`) so the app's AuthErrorBoundary can surface it, exactly like the
  * finance and giving gates.
  */
 import { ConvexError } from "convex/values";
-import { expandPowers, type Power } from "@events-os/shared";
-import { Id } from "../_generated/dataModel";
+import {
+  applicationInChapterReach,
+  chapterListingRegion,
+  expandPowers,
+  listingRegions,
+  type ListingRegion,
+  type Power,
+} from "@events-os/shared";
+import { Doc, Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
 import { isSuperuser } from "./superuser";
 import { requireUserId } from "./context";
@@ -40,8 +51,16 @@ import { getSeatDerivedHiringCapabilities } from "./seats";
 export interface HiringAccess {
   /** Superuser — the bootstrap path, mirrored across the repo. */
   isSuperuser: boolean;
-  /** Read the desk. */
+  /** Read the WHOLE desk (central `hiring.view`). */
   canView: boolean;
+  /** Read at least some applications: the whole desk, or a chapter's slice.
+   *  Implied by `canView`. */
+  canViewApplications: boolean;
+  /** One entry per chapter whose slice the caller reads (chapter-scoped
+   *  `hiring.view`): the region that chapter recruits for, or `null` when it
+   *  names none (it then sees only the open-to-other-roles pool). Empty for a
+   *  whole-desk reader, whose reach needs no slicing. */
+  chapterRegions: Array<ListingRegion | null>;
   /** Run the pipeline (implies `canView`). */
   canManage: boolean;
   /** Close a file (implies `canManage`). */
@@ -51,6 +70,8 @@ export interface HiringAccess {
 const NONE: HiringAccess = {
   isSuperuser: false,
   canView: false,
+  canViewApplications: false,
+  chapterRegions: [],
   canManage: false,
   canDecide: false,
 };
@@ -64,7 +85,14 @@ const NONE: HiringAccess = {
  */
 export async function resolveHiringAccess(ctx: QueryCtx): Promise<HiringAccess> {
   if (await isSuperuser(ctx)) {
-    return { isSuperuser: true, canView: true, canManage: true, canDecide: true };
+    return {
+      isSuperuser: true,
+      canView: true,
+      canViewApplications: true,
+      chapterRegions: [],
+      canManage: true,
+      canDecide: true,
+    };
   }
 
   const identity = await ctx.auth.getUserIdentity();
@@ -76,13 +104,25 @@ export async function resolveHiringAccess(ctx: QueryCtx): Promise<HiringAccess> 
     .withIndex("by_user", (q) => q.eq("userId", userId))
     .collect();
 
-  const access: HiringAccess = { ...NONE };
+  const access: HiringAccess = { ...NONE, chapterRegions: [] };
+  const chapterIds = new Set<Id<"chapters">>();
   for (const person of people) {
     if (person.isPlaceholder === true) continue;
     const caps = await getSeatDerivedHiringCapabilities(ctx, person._id);
     if (caps.view) access.canView = true;
     if (caps.manage) access.canManage = true;
     if (caps.decide) access.canDecide = true;
+    for (const id of caps.viewChapterIds) chapterIds.add(id);
+  }
+  if (access.canView) {
+    access.canViewApplications = true; // the whole desk; no slice needed
+  } else {
+    for (const id of chapterIds) {
+      const chapter = await ctx.db.get(id);
+      if (!chapter) continue; // a grant on a deleted chapter reaches nothing
+      access.chapterRegions.push(chapterListingRegion(chapter));
+      access.canViewApplications = true;
+    }
   }
   return access;
 }
@@ -97,6 +137,54 @@ export async function requireHiringView(ctx: QueryCtx): Promise<HiringAccess> {
     });
   }
   return access;
+}
+
+/** What a caller who may read applications can see: everything, or a
+ *  chapter's slice. `sees` is the one filter every application read applies. */
+export interface ApplicationsReach {
+  access: HiringAccess;
+  /** `false` for a chapter-slice reader — the UI says what it is showing. */
+  wholeDesk: boolean;
+  sees: (row: Doc<"jobApplications">) => boolean;
+}
+
+/** Bound on the listings read to place a role in a city. The org posts a few
+ *  dozen roles; this is far above that. */
+const LISTING_SCAN_LIMIT = 500;
+
+/**
+ * Assert the caller may read APPLICATIONS — the whole desk, or a chapter's
+ * slice of it (chapter-scoped `hiring.view`) — and return the filter that
+ * draws the slice. Every application read (the list, the counts, one file)
+ * goes through this rather than `requireHiringView`, which stays the gate for
+ * the rest of the desk.
+ */
+export async function requireApplicationsView(
+  ctx: QueryCtx,
+): Promise<ApplicationsReach> {
+  const access = await resolveHiringAccess(ctx);
+  if (!access.canViewApplications) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: "You don't have access to the hiring desk.",
+    });
+  }
+  if (access.canView) return { access, wholeDesk: true, sees: () => true };
+
+  const listings = await ctx.db.query("jobListings").take(LISTING_SCAN_LIMIT);
+  const regionsBySlug = new Map(
+    listings.map((l) => [l.slug, listingRegions(l.location)] as const),
+  );
+  const regionsOfRole = (slug: string) => regionsBySlug.get(slug) ?? null;
+  const regions = access.chapterRegions;
+  return {
+    access,
+    wholeDesk: false,
+    sees: (row) =>
+      regions.some((region) =>
+        applicationInChapterReach(row, region, regionsOfRole),
+      ),
+  };
 }
 
 /** Assert the caller may RUN the pipeline (move a file, file a review, start a

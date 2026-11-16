@@ -53,6 +53,7 @@ import {
   HIRING_STAGES,
   HIRING_OUTCOME_DEFS,
   LEADS_INBOX,
+  LISTING_REGION_LABELS,
   MIN_REVIEWS_BEFORE_DECISION,
   APPLICATION_STALE_DAYS,
   RUBRIC_MAX,
@@ -64,6 +65,7 @@ import {
   type ApplicationToggleableField,
   type HiringOutcome,
   type HiringStage,
+  type ListingRegion,
   type TrialTrack,
 } from "@events-os/shared";
 import {
@@ -78,7 +80,7 @@ import {
   hiringDeskRecipients,
   requireHiringDecide,
   requireHiringManage,
-  requireHiringView,
+  requireApplicationsView,
   resolveHiringAccess,
 } from "./lib/hiringAccess";
 import { requireUserId } from "./lib/context";
@@ -506,11 +508,17 @@ export const submitApplication = mutation({
 // ── Desk reads ───────────────────────────────────────────────────────────────
 
 /** The caller's reach, for nav and in-screen gating. Never throws — a signed-in
- *  member with no hiring seat gets three `false`s, not an error. */
+ *  member with no hiring seat gets all `false`s, not an error.
+ *
+ *  `canView` is the whole desk; `canViewApplications` also covers a chapter's
+ *  slice of the applications (chapter-scoped `hiring.view`), and `sliceLabel`
+ *  then says, in words, which files that slice holds. */
 export const myHiringAccess = query({
   args: {},
   returns: v.object({
     canView: v.boolean(),
+    canViewApplications: v.boolean(),
+    sliceLabel: v.union(v.string(), v.null()),
     canManage: v.boolean(),
     canDecide: v.boolean(),
   }),
@@ -518,11 +526,28 @@ export const myHiringAccess = query({
     const access = await resolveHiringAccess(ctx);
     return {
       canView: access.canView,
+      canViewApplications: access.canViewApplications,
+      sliceLabel:
+        access.canView || !access.canViewApplications
+          ? null
+          : applicationSliceLabel(access.chapterRegions),
       canManage: access.canManage,
       canDecide: access.canDecide,
     };
   },
 });
+
+/** "Applications for NYC roles, and anyone open to other roles." */
+function applicationSliceLabel(regions: Array<ListingRegion | null>): string {
+  const named = [
+    ...new Set(
+      regions.filter((r): r is ListingRegion => r !== null),
+    ),
+  ].map((r) => LISTING_REGION_LABELS[r]);
+  return named.length > 0
+    ? `Applications for ${named.join(" and ")} roles, and anyone open to other roles.`
+    : "Applicants who are open to other roles.";
+}
 
 const applicationRowValidator = v.object({
   _id: v.id("jobApplications"),
@@ -625,7 +650,7 @@ export const listApplications = query({
   },
   returns: v.array(applicationRowValidator),
   handler: async (ctx, { stage, roleSlug, includeClosed }) => {
-    await requireHiringView(ctx);
+    const reach = await requireApplicationsView(ctx);
 
     const rows = stage
       ? await ctx.db
@@ -639,6 +664,7 @@ export const listApplications = query({
           .take(APPLICATION_LIST_LIMIT);
 
     const filtered = rows
+      .filter(reach.sees)
       .filter((row) => (roleSlug ? row.roleSlug === roleSlug : true))
       .filter((row) =>
         includeClosed || stage ? true : !isClosedStage(row.stage as HiringStage),
@@ -668,13 +694,15 @@ export const pipelineSummary = query({
     responsePromiseDays: v.number(),
   }),
   handler: async (ctx) => {
-    await requireHiringView(ctx);
+    const reach = await requireApplicationsView(ctx);
     const now = Date.now();
-    const rows = await ctx.db
-      .query("jobApplications")
-      .withIndex("by_createdAt")
-      .order("desc")
-      .take(APPLICATION_LIST_LIMIT);
+    const rows = (
+      await ctx.db
+        .query("jobApplications")
+        .withIndex("by_createdAt")
+        .order("desc")
+        .take(APPLICATION_LIST_LIMIT)
+    ).filter(reach.sees);
 
     const byStage: Record<string, number> = {};
     for (const s of HIRING_STAGES) byStage[s] = 0;
@@ -798,9 +826,11 @@ export const getApplication = query({
     }),
   ),
   handler: async (ctx, { applicationId }) => {
-    await requireHiringView(ctx);
+    const reach = await requireApplicationsView(ctx);
     const row = await ctx.db.get(applicationId);
-    if (!row) return null;
+    // Outside a chapter reader's slice reads as "not found", like a file that
+    // doesn't exist — no hint that it does.
+    if (!row || !reach.sees(row)) return null;
 
     const reviewRows = await ctx.db
       .query("applicationReviews")
@@ -859,7 +889,7 @@ export const getApplication = query({
           })),
       ),
       otherApplications: history
-        .filter((h) => h._id !== applicationId)
+        .filter((h) => h._id !== applicationId && reach.sees(h))
         .sort((a, b) => b.createdAt - a.createdAt)
         .map((h) => ({
           _id: h._id,

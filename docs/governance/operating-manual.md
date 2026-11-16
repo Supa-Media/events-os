@@ -109,7 +109,7 @@ Every chapter is stamped with this chart.
 
 | Seat | Reports to | Holders | Powers granted |
 |---|---|---|---|
-| Chapter Director | — (chart root) | 1 | `finance.view`, `finance.budgets.approve`, `finance.ledger.publish`, `giving.view`, `data.export`, `events.checkin`, `marketing.designs.edit` |
+| Chapter Director | — (chart root) | 1 | `finance.view`, `finance.budgets.approve`, `finance.ledger.publish`, `giving.view`, `data.export`, `events.checkin`, `marketing.designs.edit`, `hiring.view` |
 | Treasurer | Chapter Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view` |
 | Music Lead | Chapter Director | 1 | — |
 | Vocal Lead | Music Lead | 1 | — |
@@ -185,7 +185,9 @@ Academy teaches (`growing-the-team`); since 2026-08-23 the product carries it:
    with a reason, or a not-yet carrying the date it will be revisited.
 
 Applications, rubric reviews, and decisions live on the Hiring desk in Chapter
-OS (`hiring.view` / `hiring.edit` / `hiring.approve`). Every applicant hears
+OS (`hiring.view` / `hiring.edit` / `hiring.approve`). A Chapter Director can
+read the applications for their own city's roles, and those of anyone open to
+other roles; running a file and making the call stay with central. Every applicant hears
 back from a person, either way; no reply deadline is promised. Placement into a
 seat is still an appointment under §2.3 — the pipeline informs the appointment;
 it does not make it. Volunteer signups are triaged on the same desk, with a
@@ -218,7 +220,7 @@ A **power** is one named thing a person is allowed to do. The grammar is
 | `email.campaigns.edit` | Compose a campaign and send it for approval |
 | `email.campaigns.approve` | Approve a campaign for sending |
 | `events.checkin` | Check attendees in at the door |
-| `hiring.view` | Read the Hiring desk — applications, interview rubrics, trial reviews |
+| `hiring.view` | Read the Hiring desk — applications, interview rubrics, trial reviews. Held at a chapter, it reads only applications for that chapter's city plus anyone open to other roles |
 | `hiring.edit` | Run the pipeline: move candidates, file rubric reviews, start an Empowerment Trial |
 | `hiring.approve` | Make the call — place, not-now, or decline a candidate, and send the outcome message |
 | `people.academy.edit` | Edit Academy courses in the app — details, lessons, lesson order, quizzes — and publish the changes to every learner. Every publish is recorded and can be undone |

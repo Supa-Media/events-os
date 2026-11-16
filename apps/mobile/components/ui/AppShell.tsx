@@ -111,7 +111,7 @@ const NAV: NavEntry[] = [
   // paid, and the word was already wrong on the public side. Sits under
   // /people/* because it is the same domain as the roster tab, but keeps its
   // own nav entry so a People Associate can reach their work without the
-  // admin-or-lead People tab. Gated by `hiring.myHiringAccess.canView`; the
+  // admin-or-lead People tab. Gated by `hiring.myHiringAccess.canViewApplications`; the
   // in-screen gates are the real ones.
   {
     label: "Recruiting",
@@ -187,7 +187,9 @@ function useNav(): NavEntry[] {
       case "/giving":
         return giving?.canView === true;
       case "/people/pipeline":
-        return hiring?.canView === true;
+        // Any reach into the applications — the whole desk, or a chapter's
+        // slice of it (chapter-scoped `hiring.view`).
+        return hiring?.canViewApplications === true;
       case "/marketing":
         return marketing?.canViewDesk === true;
       case "/team":

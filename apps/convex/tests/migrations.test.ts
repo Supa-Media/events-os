@@ -380,6 +380,7 @@ const REGISTRY_NAMES = [
   "0096_people_associate_and_operations_team",
   "0097_ledger_publish_to_treasurers",
   "0098_restore_ledger_publish_ed_cd",
+  "0099_chapter_director_hiring_view",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

@@ -78,7 +78,7 @@ export default function ApplicationScreen() {
   });
 
   if (access === undefined) return <Screen loading />;
-  if (!access.canView) {
+  if (!access.canViewApplications) {
     return (
       <Screen>
         <Narrow>

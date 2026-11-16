@@ -337,6 +337,8 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "data.export",
       "events.checkin",
       "marketing.designs.edit",
+      // 2026-11-16: reads this chapter's slice of the applications.
+      "hiring.view",
     ],
     // `finance.edit` at CHAPTER scope — the whole finance domain for this
     // chapter and nothing beyond it. `finance.ledger.publish` (2026-10-29):

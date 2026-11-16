@@ -426,6 +426,8 @@ describe("ACCESS PRESERVATION — standardizing cost nobody a power", () => {
    *  - `marketing` for `chapter_director` (2026-08-28, second wave): the brand
    *    kit, on the founder's instruction. The CD held nothing in this domain
    *    before, so it is named here for the same reason the rest are.
+   *  - `hiring` for `chapter_director` (2026-11-16): `hiring.view`, read-only,
+   *    reaching that chapter's slice of the applications.
    */
   const POST_STANDARDIZATION_DOMAINS: Partial<Record<string, string[]>> = {
     executive_director: ["hiring", "marketing", "people"],
@@ -437,7 +439,7 @@ describe("ACCESS PRESERVATION — standardizing cost nobody a power", () => {
     graphic_designer: ["marketing"],
     marketing_associate: ["marketing"],
     marketing_lead: ["marketing"],
-    chapter_director: ["marketing"],
+    chapter_director: ["marketing", "hiring"],
   };
 
   test("no seat gained a power outside its own domains", () => {
@@ -546,6 +548,17 @@ describe("scope says where the RESOURCE lives, not who may edit it", () => {
       "marketing.blog.edit",
       "marketing.blog.publish",
     ] as const) {
+      expect(POWER_DEFS[power].scope, power).toBe("central");
+      expect(powersAtScope([power], "chapter"), power).not.toContain(power);
+    }
+  });
+});
+
+describe("hiring: a chapter may read, never run or decide", () => {
+  test("hiring.view reaches a chapter scope; edit and approve stay central", () => {
+    // 2026-11-16: a Chapter Director reads their city's applications.
+    expect(powersAtScope(["hiring.view"], "chapter")).toContain("hiring.view");
+    for (const power of ["hiring.edit", "hiring.approve"] as const) {
       expect(POWER_DEFS[power].scope, power).toBe("central");
       expect(powersAtScope([power], "chapter"), power).not.toContain(power);
     }

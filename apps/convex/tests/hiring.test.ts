@@ -516,7 +516,185 @@ describe("hiring — the gates", () => {
       });
     });
     const access = await s.as.query(api.hiring.myHiringAccess, {});
-    expect(access).toEqual({ canView: false, canManage: false, canDecide: false });
+    expect(access).toEqual({
+      canView: false,
+      canViewApplications: false,
+      sliceLabel: null,
+      canManage: false,
+      canDecide: false,
+    });
+  });
+});
+
+/** A published, open listing at `location`. */
+async function seedListing(
+  t: ReturnType<typeof newT>,
+  slug: string,
+  location: string,
+) {
+  const now = Date.now();
+  await run(t, (ctx) =>
+    ctx.db.insert("jobListings", {
+      slug,
+      title: slug,
+      status: "open",
+      published: true,
+      team: "Chapter",
+      commitment: "Volunteer",
+      location,
+      hoursPerWeek: 4,
+      reportsTo: "Chapter Director",
+      worksWith: [],
+      manages: [],
+      trialTrack: "team_member",
+      order: 0,
+      summary: "",
+      whyThisSeatExists: "",
+      outcomes: [],
+      authority: [],
+      responsibilities: [],
+      rhythms: [],
+      firstNinetyDays: [],
+      required: [],
+      preferred: [],
+      notThisRole: [],
+      successLooks: [],
+      postedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    }),
+  );
+}
+
+/** Put the caller on a CHAPTER seat at their own chapter carrying `capabilities`. */
+async function seedChapterSeat(s: ChapterSetup, capabilities: string[]) {
+  const now = Date.now();
+  await run(s.t, async (ctx) => {
+    const personId = await ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: "Chapter Director",
+      email: "cd@publicworship.life",
+      userId: s.userId,
+      createdAt: now,
+    });
+    const seatDefId = await ctx.db.insert("seatDefs", {
+      slug: "chapter_director",
+      title: "Chapter Director",
+      chart: "chapter",
+      parentSlug: "root",
+      maxHolders: 1,
+      duties: [],
+      capabilities,
+      sortOrder: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("seatAssignments", {
+      seatDefId,
+      scope: s.chapterId,
+      personId,
+      createdAt: now,
+    });
+  });
+}
+
+describe("hiring — a chapter's slice of the applications", () => {
+  async function seedCity(t: ReturnType<typeof newT>) {
+    await seedListing(t, "nyc-treasurer", "New York City");
+    await seedListing(t, "dmv-treasurer", "Washington, DC / Maryland / Virginia region");
+    const nyc = await submit(t, {
+      email: "nyc@example.com",
+      roleSlug: "nyc-treasurer",
+      roleTitle: "NYC Treasurer",
+    });
+    const dmv = await submit(t, {
+      email: "dmv@example.com",
+      roleSlug: "dmv-treasurer",
+      roleTitle: "DMV Treasurer",
+    });
+    const dmvOpen = await submit(t, {
+      email: "open@example.com",
+      roleSlug: "dmv-treasurer",
+      roleTitle: "DMV Treasurer",
+      openToOtherRoles: true,
+    });
+    const dmvTicked = await submit(t, {
+      email: "ticked@example.com",
+      roleSlug: "dmv-treasurer",
+      roleTitle: "DMV Treasurer",
+      otherRoles: [{ slug: "nyc-treasurer", title: "NYC Treasurer" }],
+    });
+    // A role whose listing is gone is placed by the title it was filed under.
+    const retiredNyc = await submit(t, {
+      email: "retired@example.com",
+      roleSlug: "retired-role",
+      roleTitle: "NYC Sound Lead",
+    });
+    return { nyc, dmv, dmvOpen, dmvTicked, retiredNyc };
+  }
+
+  test("the NYC Chapter Director sees NYC roles and the open-to-other-roles pool, and nothing else", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { chapterName: "New York" });
+    await seedChapterSeat(s, ["finance.view", "hiring.view"]);
+    const ids = await seedCity(t);
+
+    const access = await s.as.query(api.hiring.myHiringAccess, {});
+    expect(access).toEqual({
+      canView: false,
+      canViewApplications: true,
+      sliceLabel: "Applications for NYC roles, and anyone open to other roles.",
+      canManage: false,
+      canDecide: false,
+    });
+
+    const rows = await s.as.query(api.hiring.listApplications, {});
+    expect(new Set(rows.map((r) => r._id))).toEqual(
+      new Set([ids.nyc, ids.dmvOpen, ids.dmvTicked, ids.retiredNyc]),
+    );
+    const summary = await s.as.query(api.hiring.pipelineSummary, {});
+    expect(summary.open).toBe(4);
+
+    expect(
+      await s.as.query(api.hiring.getApplication, { applicationId: ids.dmv }),
+    ).toBeNull();
+    const file = await s.as.query(api.hiring.getApplication, {
+      applicationId: ids.nyc,
+    });
+    expect(file?.application._id).toBe(ids.nyc);
+  });
+
+  test("a chapter reader can't run the pipeline or open the rest of the desk", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { chapterName: "New York" });
+    await seedChapterSeat(s, ["hiring.view"]);
+    const { nyc } = await seedCity(t);
+
+    await expect(
+      s.as.mutation(api.hiring.advanceStage, { applicationId: nyc, stage: "reviewing" }),
+    ).rejects.toThrow(/permission to run the hiring pipeline/);
+    await expect(s.as.query(api.volunteers.listSignups, {})).rejects.toThrow(
+      /access to the hiring desk/,
+    );
+  });
+
+  test("a chapter that names no listing city sees only the open-to-other-roles pool", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { chapterName: "Ohio" });
+    await seedChapterSeat(s, ["hiring.view"]);
+    const ids = await seedCity(t);
+
+    const rows = await s.as.query(api.hiring.listApplications, {});
+    expect(rows.map((r) => r._id)).toEqual([ids.dmvOpen]);
+  });
+
+  test("a central hiring.view still reads every file", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedHiringSeat(s, ["hiring.view"]);
+    await seedCity(t);
+    const rows = await s.as.query(api.hiring.listApplications, {});
+    expect(rows).toHaveLength(5);
   });
 });
 
