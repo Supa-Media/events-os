@@ -8,10 +8,12 @@
  * midpoint, a decision nobody has made), and the default list is every open
  * file, newest first.
  *
- * CENTRAL-only, like Territories and Interest: the backend gates reads on
- * `hiring.view` and writes on `hiring.edit` / `hiring.approve`
- * (`apps/convex/lib/hiringAccess.ts`). This screen is a VIEW surface first —
- * a `hiring.view` holder browses everything and simply gets no actions.
+ * The backend gates reads on `hiring.view` and writes on `hiring.edit` /
+ * `hiring.approve` (`apps/convex/lib/hiringAccess.ts`). This screen is a VIEW
+ * surface first — a `hiring.view` holder browses and simply gets no actions.
+ * A CHAPTER-scoped `hiring.view` (a Chapter Director) gets this screen alone,
+ * filtered server-side to their city's roles plus the open-to-other-roles
+ * pool; the other desk tabs stay central and are hidden from them.
  *
  * What feeds it is public: `/careers` and `/careers/apply` on the landing site
  * (`apps/landing/src/pages/careers/`).
@@ -80,7 +82,7 @@ export default function TeamPipelineScreen() {
   const access = useQuery(api.hiring.myHiringAccess, {});
 
   if (access === undefined) return <Screen loading />;
-  if (!access.canView) {
+  if (!access.canViewApplications) {
     return (
       <Screen>
         <Narrow>
@@ -93,10 +95,16 @@ export default function TeamPipelineScreen() {
       </Screen>
     );
   }
-  return <PipelineBody />;
+  return <PipelineBody wholeDesk={access.canView} sliceLabel={access.sliceLabel} />;
 }
 
-function PipelineBody() {
+function PipelineBody({
+  wholeDesk,
+  sliceLabel,
+}: {
+  wholeDesk: boolean;
+  sliceLabel: string | null;
+}) {
   const router = useRouter();
   // `null` = every open file (the default). A stage id filters to that column;
   // "closed" shows the four terminal stages together, because closed files are
@@ -119,7 +127,7 @@ function PipelineBody() {
   return (
     <Screen>
       <Narrow>
-        <PipelineTabs />
+        {wholeDesk ? <PipelineTabs /> : null}
         <SectionHeader
           title="Team applications"
           count={`${summary.open} open`}
@@ -165,11 +173,17 @@ function PipelineBody() {
             />
           }
         />
-        <Text className="mb-3 text-sm text-muted">
-          Everyone applying for a SEAT comes through here — one funnel, one
-          standard. (Volunteers who just want to help at a gathering are the
-          other tab.)
-        </Text>
+        {sliceLabel ? (
+          <Text className="mb-3 text-sm text-muted">
+            {sliceLabel} The People desk runs every file; you can read them here.
+          </Text>
+        ) : (
+          <Text className="mb-3 text-sm text-muted">
+            Everyone applying for a SEAT comes through here — one funnel, one
+            standard. (Volunteers who just want to help at a gathering are the
+            other tab.)
+          </Text>
+        )}
 
         <View className="mb-4 flex-row flex-wrap gap-2">
           <Stat label="Open files" value={summary.open} />

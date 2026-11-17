@@ -319,12 +319,16 @@ export async function holdsCheckInSeatAt(
 
 // ── Hiring seat-derived capabilities ─────────────────────────────────────────
 
-/** One person's seat-derived HIRING reach. Central-scope only — a hiring power
- *  held at a chapter scope reaches nothing (see `lib/hiringAccess.ts`), so
- *  unlike the giving reader below there is no per-scope map to key. */
+/** One person's seat-derived HIRING reach. `view`/`manage`/`decide` are
+ *  central-scope grants; the only chapter-scope hiring grant that reaches
+ *  anything is `hiring.view`, collected in `viewChapterIds` (see
+ *  `lib/hiringAccess.ts` for the slice it reads). */
 export interface SeatDerivedHiringCapabilities {
-  /** Some central seat carries `hiring.view` (read the desk). */
+  /** Some central seat carries `hiring.view` (read the whole desk). */
   view: boolean;
+  /** Chapters where some seat carries `hiring.view` — read that chapter's
+   *  slice of the applications. */
+  viewChapterIds: Id<"chapters">[];
   /** …`hiring.edit` (run the pipeline). */
   manage: boolean;
   /** …`hiring.approve` (close a file). */
@@ -337,10 +341,10 @@ export interface SeatDerivedHiringCapabilities {
  * capped at `PERSON_SEAT_ASSIGNMENT_LIMIT`, one `ctx.db.get` per assignment,
  * a stale def contributes nothing, capabilities only ever OR together.
  *
- * The one difference: assignments at a CHAPTER scope are skipped outright.
- * All three hiring powers are declared `scope: "central"`, so a chapter grant
- * is meaningless; skipping it here keeps that promise in the enforcement path
- * rather than only in the chart's rendering.
+ * The one difference: at a CHAPTER scope only `hiring.view` counts.
+ * `hiring.edit` and `hiring.approve` are declared `scope: "central"`, so a
+ * chapter grant of either is meaningless; ignoring it here keeps that promise
+ * in the enforcement path rather than only in the chart's rendering.
  */
 export async function getSeatDerivedHiringCapabilities(
   ctx: QueryCtx,
@@ -353,11 +357,11 @@ export async function getSeatDerivedHiringCapabilities(
 
   const result: SeatDerivedHiringCapabilities = {
     view: false,
+    viewChapterIds: [],
     manage: false,
     decide: false,
   };
   for (const assignment of assignments) {
-    if (assignment.scope !== "central") continue;
     const def = await ctx.db.get(assignment.seatDefId);
     if (!def) continue; // stale assignment on a deleted def
 
@@ -365,6 +369,15 @@ export async function getSeatDerivedHiringCapabilities(
     // explicit edge plus the ladder rule, both already applied by
     // `expandPowers`, so no manual "decide implies manage" step here.
     const powers = expandPowers(def.capabilities);
+    if (assignment.scope !== "central") {
+      if (
+        powers.has("hiring.view") &&
+        !result.viewChapterIds.includes(assignment.scope)
+      ) {
+        result.viewChapterIds.push(assignment.scope);
+      }
+      continue;
+    }
     if (powers.has("hiring.approve")) result.decide = true;
     if (powers.has("hiring.edit")) result.manage = true;
     if (powers.has("hiring.view")) result.view = true;

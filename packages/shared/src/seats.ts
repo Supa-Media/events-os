@@ -576,6 +576,13 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       // public ledger. The power had to lose `scope: "central"` for this grant
       // to reach anything at all — see `powers.ts`.
       "marketing.designs.edit",
+      // 2026-11-16 (founder: "make sure the NYC chapter director can see the
+      // recruiting tab and all the people that applied for nyc roles or open
+      // to other roles"). At a chapter scope this reads only the chapter's
+      // slice of the applications — roles in its city, plus the
+      // open-to-other-roles pool — and never runs or decides a file
+      // (`lib/hiringAccess.ts`).
+      "hiring.view",
     ],
     legacyTitle: "president",
   },

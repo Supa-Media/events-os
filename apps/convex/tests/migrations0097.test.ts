@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { newT, run } from "./setup.helpers";
 import { runLedgerPublishToTreasurers } from "../migrations/0097_ledger_publish_to_treasurers";
 import { runRestoreLedgerPublishEdCd } from "../migrations/0098_restore_ledger_publish_ed_cd";
+import { runChapterDirectorHiringView } from "../migrations/0099_chapter_director_hiring_view";
 
 /**
  * 0097 — `finance.ledger.publish` onto chapter Treasurers.
@@ -81,5 +82,24 @@ describe("0098_restore_ledger_publish_ed_cd", () => {
     ]);
     expect(await capsOf(t, cd)).toEqual(["finance.view", "finance.ledger.publish"]);
     expect(await capsOf(t, fm)).toEqual(["finance.edit"]);
+  });
+});
+
+describe("0099_chapter_director_hiring_view", () => {
+  test("adds hiring.view to Chapter Director rows only, once", async () => {
+    const t = newT();
+    const cd = await seedSeat(t, "chapter_director", ["finance.view"]);
+    const tr = await seedSeat(t, "treasurer", ["finance.edit"]);
+
+    expect(await run(t, (ctx) => runChapterDirectorHiringView(ctx))).toEqual({
+      patched: 1,
+      skipped: 0,
+    });
+    expect(await run(t, (ctx) => runChapterDirectorHiringView(ctx))).toEqual({
+      patched: 0,
+      skipped: 1,
+    });
+    expect(await capsOf(t, cd)).toEqual(["finance.view", "hiring.view"]);
+    expect(await capsOf(t, tr)).toEqual(["finance.edit"]);
   });
 });

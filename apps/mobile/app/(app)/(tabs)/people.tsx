@@ -487,7 +487,7 @@ export default function PeopleScreen() {
               /team, or a volunteer signup at /serve — so the roster is where
               a director expects the door to be. Shown only to a People-desk
               holder; the desk's own gates are the real ones. */}
-          {hiringAccess?.canView === true ? (
+          {hiringAccess?.canViewApplications === true ? (
             <Pressable
               onPress={() => router.push("/people/pipeline" as never)}
               hitSlop={6}
