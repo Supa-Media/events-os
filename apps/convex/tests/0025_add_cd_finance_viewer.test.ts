@@ -112,6 +112,8 @@ describe("0025_add_cd_finance_viewer", () => {
       // this assertion pins the TEMPLATE's exact array — it is not about
       // finance, it just happens to be the fixture that reads it back.
       "marketing.designs.edit",
+      // 2026-11-16: the chapter's slice of the applications.
+      "hiring.view",
     ]);
 
     const result = await run(t, (ctx) => runAddCdFinanceViewer(ctx));
@@ -163,6 +165,8 @@ describe("0025_add_cd_finance_viewer", () => {
       "events.checkin",
       // 2026-08-28: the brand kit (founder instruction) — see above.
       "marketing.designs.edit",
+      // 2026-11-16: the chapter's slice of the applications.
+      "hiring.view",
     ]);
   });
 });

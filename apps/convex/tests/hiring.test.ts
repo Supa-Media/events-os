@@ -484,7 +484,7 @@ describe("hiring — the gates", () => {
     ).rejects.toThrow(/use place, not-now, or decline/i);
   });
 
-  test("a chapter-scoped hiring seat reaches nothing", async () => {
+  test("a chapter-scoped hiring seat can't run or decide — it only reads the chapter's slice", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const now = Date.now();
@@ -516,10 +516,12 @@ describe("hiring — the gates", () => {
       });
     });
     const access = await s.as.query(api.hiring.myHiringAccess, {});
+    // `hiring.approve` implies `hiring.view`, which DOES reach a chapter
+    // (2026-11-16); the run and decide rungs never do.
     expect(access).toEqual({
       canView: false,
-      canViewApplications: false,
-      sliceLabel: null,
+      canViewApplications: true,
+      sliceLabel: "Applications for NYC roles, and anyone open to other roles.",
       canManage: false,
       canDecide: false,
     });
