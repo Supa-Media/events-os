@@ -1710,6 +1710,31 @@ function ReconcileGrid() {
     }
   }
 
+  // The same ask from a person's band (founder, 2026-11-17: the bulk bar sits
+  // at the top of the list, out of sight of the band's Chase button). Asks
+  // only for that person's ticked rows and KEEPS the selection, so the
+  // "Chase N selected" beside it goes straight after the same rows.
+  const [codingAskedFor, setCodingAskedFor] = useState<Set<string>>(new Set());
+  const [askingKey, setAskingKey] = useState<string | null>(null);
+  // A different selection is a different ask.
+  useEffect(() => setCodingAskedFor(new Set()), [selected]);
+  async function bandRequestCoding(personKey: string) {
+    const ids = selectedRows
+      .filter((r) => r.cardholder?.personId === personKey)
+      .map((r) => r.id as Id<"transactions">);
+    if (ids.length === 0) return;
+    setAskingKey(personKey);
+    try {
+      const res = await run(
+        () => requestCoding({ transactionIds: ids }),
+        { errorTitle: "Couldn't ask for coding" },
+      );
+      if (res) setCodingAskedFor((prev) => new Set(prev).add(personKey));
+    } finally {
+      setAskingKey(null);
+    }
+  }
+
   // Acknowledge a whole selection as having no receipts. One attestation per
   // row server-side (`receiptExceptions.attestBulk`), auto-approved for the
   // rows under the org threshold when the caller is a Finance manager — so the
@@ -2636,29 +2661,47 @@ function ReconcileGrid() {
                 if (chasingSelection && selectedHere === 0) return null;
                 const followUp = followUpByPerson.get(personId);
                 const stoppedAt = stoppedByPerson.get(personId);
+                const asked = codingAskedFor.has(personId);
                 return (
                   <View className="items-end gap-1">
-                    <Button
-                      title={
-                        already
-                          ? "Chased today"
-                          : chasingSelection
-                            ? `Chase ${selectedHere} selected`
-                            : "Chase"
-                      }
-                      variant="secondary"
-                      size="sm"
-                      icon={already ? undefined : "send"}
-                      disabled={already}
-                      loading={sendingKey === personId}
-                      onPress={() =>
-                        setPendingChase({
-                          personId,
-                          key: personId,
-                          title: `Chase ${group.label}`,
-                        })
-                      }
-                    />
+                    <View className="flex-row flex-wrap items-center justify-end gap-2">
+                      {chasingSelection && selectedHere > 0 ? (
+                        <Button
+                          title={
+                            asked
+                              ? "Coding asked for"
+                              : `Ask for coding (${selectedHere})`
+                          }
+                          variant="ghost"
+                          size="sm"
+                          icon={asked ? "check" : "help-circle"}
+                          disabled={asked}
+                          loading={askingKey === personId}
+                          onPress={() => void bandRequestCoding(personId)}
+                        />
+                      ) : null}
+                      <Button
+                        title={
+                          already
+                            ? "Chased today"
+                            : chasingSelection
+                              ? `Chase ${selectedHere} selected`
+                              : "Chase"
+                        }
+                        variant="secondary"
+                        size="sm"
+                        icon={already ? undefined : "send"}
+                        disabled={already}
+                        loading={sendingKey === personId}
+                        onPress={() =>
+                          setPendingChase({
+                            personId,
+                            key: personId,
+                            title: `Chase ${group.label}`,
+                          })
+                        }
+                      />
+                    </View>
                     {followUp ? (
                       <Text className="text-xs text-muted text-right">
                         {chaseStatusLine(followUp, Date.now())}
