@@ -804,7 +804,14 @@ function ReconcileGrid() {
     () =>
       new Map(
         (nudgeStatus ?? []).flatMap((n) =>
-          n.stoppedAt != null ? [[n.personId, n.stoppedAt] as const] : [],
+          n.stoppedAt != null
+            ? [
+                [
+                  n.personId,
+                  { at: n.stoppedAt, byHand: n.stoppedByHand === true },
+                ] as const,
+              ]
+            : [],
         ),
       ),
     [nudgeStatus],
@@ -1718,6 +1725,21 @@ function ReconcileGrid() {
   const [askingKey, setAskingKey] = useState<string | null>(null);
   // A different selection is a different ask.
   useEffect(() => setCodingAskedFor(new Set()), [selected]);
+  // Stop a person's daily follow-ups by hand (founder, 2026-11-19: "I need a
+  // button to stop chase" — e.g. after filling their coding in yourself).
+  const stopFollowUps = useMutation(api.chaseFollowUps.stop);
+  const [stoppingKey, setStoppingKey] = useState<string | null>(null);
+  async function stopReminders(personId: Id<"people">) {
+    setStoppingKey(personId);
+    try {
+      await run(() => stopFollowUps({ personId }), {
+        errorTitle: "Couldn't stop the reminders",
+      });
+    } finally {
+      setStoppingKey(null);
+    }
+  }
+
   async function bandRequestCoding(personKey: string) {
     const ids = selectedRows
       .filter((r) => r.cardholder?.personId === personKey)
@@ -2665,6 +2687,16 @@ function ReconcileGrid() {
                 return (
                   <View className="items-end gap-1">
                     <View className="flex-row flex-wrap items-center justify-end gap-2">
+                      {followUp ? (
+                        <Button
+                          title="Stop reminders"
+                          variant="muted"
+                          size="sm"
+                          icon="x-circle"
+                          loading={stoppingKey === personId}
+                          onPress={() => void stopReminders(personId)}
+                        />
+                      ) : null}
                       {chasingSelection && selectedHere > 0 ? (
                         <Button
                           title={
@@ -2708,7 +2740,7 @@ function ReconcileGrid() {
                       </Text>
                     ) : stoppedAt != null ? (
                       <Text className="text-xs text-success text-right">
-                        {chaseStoppedLine(stoppedAt, Date.now())}
+                        {chaseStoppedLine(stoppedAt.at, Date.now(), stoppedAt.byHand)}
                       </Text>
                     ) : null}
                   </View>

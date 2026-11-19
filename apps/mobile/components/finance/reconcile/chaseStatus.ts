@@ -45,6 +45,12 @@ export function chaseStatusLine(s: ChaseFollowUpStatus, now: number): string {
 }
 
 /** Every chased charge is coded: the sweep stopped the reminders. */
-export function chaseStoppedLine(stoppedAt: number, now: number): string {
-  return `Done, reminders stopped ${when(stoppedAt, now)}`;
+export function chaseStoppedLine(
+  stoppedAt: number,
+  now: number,
+  byHand = false,
+): string {
+  return byHand
+    ? `Reminders stopped by hand ${when(stoppedAt, now)}`
+    : `Done, reminders stopped ${when(stoppedAt, now)}`;
 }

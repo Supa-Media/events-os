@@ -42,6 +42,12 @@ describe("chaseStatusLine", () => {
     ).toBe("Chased Mon, Nov 2 10:00am · 5 reminders, last Fri, Nov 6 7:00pm · chaser emailed");
   });
 
+  test("stopped by a manager says so", () => {
+    expect(chaseStoppedLine(Date.UTC(2026, 10, 8, 0, 0), now, true)).toBe(
+      "Reminders stopped by hand yesterday 7:00pm",
+    );
+  });
+
   test("done: when the reminders stopped", () => {
     expect(chaseStoppedLine(Date.UTC(2026, 10, 8, 0, 0), now)).toBe(
       "Done, reminders stopped yesterday 7:00pm",
