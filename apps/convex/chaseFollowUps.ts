@@ -32,7 +32,12 @@
  * normally past both, so the two rarely meet.
  */
 import { v } from "convex/values";
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+} from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
@@ -50,7 +55,9 @@ import {
   type ReminderCharge,
 } from "./lib/codingReminders";
 import { notifyCodingChase, sendCodingChaseSms } from "./cards";
-import { requireUserId } from "./lib/context";
+import { requireChapterId, requireUserId } from "./lib/context";
+import { requireCodingRequest } from "./lib/chaseAccess";
+import type { FinanceScope } from "./lib/finance";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import {
   emailButtonRow,
@@ -108,6 +115,39 @@ export const record = internalMutation({
       else await ctx.db.insert("codingChaseFollowUps", fields);
     }
     return null;
+  },
+});
+
+/**
+ * STOP A PERSON'S DAILY REMINDERS by hand (founder, 2026-11-19: "I need a
+ * button to stop chase", e.g. after filling someone's coding in for them).
+ * Marks every open follow-up row for the person settled now, with who
+ * stopped it, so the Book shows "Reminders stopped" and the sweep never
+ * sends again. Chasing the person again starts fresh rows (`record` replaces).
+ *
+ * Gate: the chase's own power on each charge's book (`requireCodingRequest`):
+ * whoever may start the reminders may stop them.
+ */
+export const stop = mutation({
+  args: { personId: v.id("people") },
+  returns: v.object({ stopped: v.number() }),
+  handler: async (ctx, { personId }) => {
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const rows = await ctx.db
+      .query("codingChaseFollowUps")
+      .withIndex("by_person", (q) => q.eq("personId", personId))
+      .take(FOLLOW_UP_SCAN_LIMIT);
+    const now = Date.now();
+    let stopped = 0;
+    for (const row of rows) {
+      if (row.settledAt != null) continue;
+      const tr = await ctx.db.get(row.transactionId);
+      if (tr) await requireCodingRequest(ctx, homeChapterId, tr.chapterId as FinanceScope);
+      await ctx.db.patch(row._id, { settledAt: now, stoppedByUserId: userId });
+      stopped++;
+    }
+    return { stopped };
   },
 });
 

@@ -976,3 +976,50 @@ describe("finances.requestCoding", () => {
     ).rejects.toThrow();
   });
 });
+
+describe("chaseFollowUps.stop", () => {
+  const realFetch = globalThis.fetch;
+  test("stopping by hand ends the daily reminders and says so", async () => {
+    const prevResendKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = "resend_test_key";
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await armCodingPolicy(s);
+      await asManager(s);
+      const ada = await seedCardholder(s, "Ada", {
+        pwEmail: "ada@publicworship.life",
+      });
+      await seedCharge(s, { cardId: ada.cardId, merchantName: "Uber" });
+
+      const sent: unknown[] = [];
+      globalThis.fetch = (async () => {
+        sent.push(1);
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await s.as.action(api.cards.sendCodingChase, {});
+      expect(sent).toHaveLength(1);
+      await run(t, async (ctx) => {
+        const row = await ctx.db.query("codingChaseFollowUps").first();
+        await ctx.db.patch(row!._id, { chasedAt: Date.now() - 2 * DAY_MS });
+      });
+
+      const out = await s.as.mutation(api.chaseFollowUps.stop, {
+        personId: ada.personId,
+      });
+      expect(out).toEqual({ stopped: 1 });
+      await t.action(internal.chaseFollowUps.sendDaily, {});
+      expect(sent).toHaveLength(1);
+
+      const status = await s.as.query(api.cards.getManualNudgeStatus, {
+        personIds: [ada.personId],
+      });
+      expect(status[0].followUp).toBeUndefined();
+      expect(status[0].stoppedByHand).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+      process.env.RESEND_API_KEY = prevResendKey;
+    }
+  });
+});

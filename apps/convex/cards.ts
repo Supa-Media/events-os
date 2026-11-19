@@ -6557,6 +6557,8 @@ export const getManualNudgeStatus = query({
       /** Every chased charge is done: when the sweep stopped the reminders.
        *  Only while nothing chased is still open. */
       stoppedAt: v.optional(v.number()),
+      /** The stop was a manager's, not the charges being done. */
+      stoppedByHand: v.optional(v.boolean()),
     }),
   ),
   handler: async (ctx, { personIds }) => {
@@ -6574,6 +6576,7 @@ export const getManualNudgeStatus = query({
         chaserTold: boolean;
       };
       stoppedAt?: number;
+      stoppedByHand?: boolean;
     }> = [];
     for (const personId of personIds.slice(0, CHASE_NUDGE_STATUS_LIMIT)) {
       const key = `person:${personId}`;
@@ -6590,9 +6593,11 @@ export const getManualNudgeStatus = query({
         .take(CHASE_FOLLOW_UP_STATUS_LIMIT);
       let followUp: (typeof out)[number]["followUp"];
       let stoppedAt: number | undefined;
+      let stoppedByHand = false;
       for (const r of rows) {
         // Done, kept a few days so the band can say so (founder, 2026-11-14).
         if (r.settledAt != null) {
+          if (r.settledAt >= (stoppedAt ?? 0)) stoppedByHand = r.stoppedByUserId != null;
           stoppedAt = Math.max(stoppedAt ?? 0, r.settledAt);
           continue;
         }
@@ -6613,7 +6618,7 @@ export const getManualNudgeStatus = query({
         personId,
         ...(recent ? { lastManualNudgeAt: recent.createdAt } : {}),
         ...(followUp ? { followUp } : {}),
-        ...(stoppedAt != null ? { stoppedAt } : {}),
+        ...(stoppedAt != null ? { stoppedAt, stoppedByHand } : {}),
       });
     }
     return out;

@@ -34,6 +34,9 @@ export const codingChaseFollowUps = defineTable({
    *  is kept `DONE_KEEP_MS` after that so the Book can say "Done, reminders
    *  stopped" (founder, 2026-11-14), then deleted. Re-chasing clears it. */
   settledAt: v.optional(v.number()),
+  /** Set when a manager STOPPED the reminders by hand (`chaseFollowUps.stop`,
+   *  founder 2026-11-19) rather than the charge being done. */
+  stoppedByUserId: v.optional(v.id("users")),
 })
   .index("by_transaction", ["transactionId"])
   .index("by_chasedAt", ["chasedAt"])
