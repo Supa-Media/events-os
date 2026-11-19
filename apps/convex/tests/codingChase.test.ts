@@ -978,6 +978,7 @@ describe("finances.requestCoding", () => {
 });
 
 describe("chaseFollowUps.stop", () => {
+  const realFetch = globalThis.fetch;
   test("stopping by hand ends the daily reminders and says so", async () => {
     const prevResendKey = process.env.RESEND_API_KEY;
     process.env.RESEND_API_KEY = "resend_test_key";
