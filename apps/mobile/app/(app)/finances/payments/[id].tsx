@@ -104,14 +104,17 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
   // with "not found in your chapter" (the same bug the composer had, fixed the
   // same way — `new.tsx` uses this exact query).
   //
-  // A central agreement also gets every chapter's book, greyed out — the same
-  // "you can see it, here's why you can't pick it" list the composer shows.
+  // A central agreement also gets every chapter's book — the same list the
+  // composer shows: chapter events/projects pickable, chapter budgets greyed.
   const scopedFor = useQuery(
     api.contractorPayments.codingOptionsForScope,
     payment?.scope
       ? {
           scope: payment.scope,
           includeChapters: payment.scope === "central",
+          // Keep an event that has since aged out of the picker, so the
+          // field still shows what this agreement is coded to.
+          ...(payment.eventId ? { keepEventId: payment.eventId } : {}),
         }
       : "skip",
   );
@@ -817,13 +820,22 @@ function attributionLabel(
   payment: ContractorPaymentDetail,
   forOptions: ForOptions | undefined,
 ): string | null {
+  // A central agreement can be coded to a chapter's event or project, which
+  // is listed under that chapter's book rather than the desk's own.
+  const chapters = forOptions?.chapters ?? [];
   if (payment.eventId) {
-    const hit = forOptions?.events.find((e) => e.id === payment.eventId);
-    return hit ? `Event · ${hit.label}` : "An event";
+    const own = forOptions?.events.find((e) => e.id === payment.eventId);
+    const book = own ? null : chapters.find((c) => c.events.some((e) => e.id === payment.eventId));
+    const hit = own ?? book?.events.find((e) => e.id === payment.eventId);
+    return hit ? `Event · ${hit.label}${book ? ` (${book.name})` : ""}` : "An event";
   }
   if (payment.projectId) {
-    const hit = forOptions?.projects.find((p) => p.id === payment.projectId);
-    return hit ? `Project · ${hit.label}` : "A project";
+    const own = forOptions?.projects.find((p) => p.id === payment.projectId);
+    const book = own
+      ? null
+      : chapters.find((c) => c.projects.some((p) => p.id === payment.projectId));
+    const hit = own ?? book?.projects.find((p) => p.id === payment.projectId);
+    return hit ? `Project · ${hit.label}${book ? ` (${book.name})` : ""}` : "A project";
   }
   if (payment.budgetId) {
     const hit = forOptions?.budgets.find((b) => b.id === payment.budgetId);

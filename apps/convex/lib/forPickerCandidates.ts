@@ -43,6 +43,28 @@ export type PickerCandidate = {
   level: "chapter" | "central" | null;
 };
 
+/**
+ * How long after an event a "What's this for?" picker keeps offering it.
+ *
+ * Founder, 2026-11-23: events that already happened clutter the picker. They
+ * are hidden, not deleted — but bills (a venue invoice, a sound tech's rate)
+ * routinely arrive a few weeks AFTER the night, so an event stays pickable for
+ * this long after its date. Older ones drop out; something still coded to one
+ * keeps showing on its own record (see `keepEventId` on the contract picker).
+ */
+export const PAST_EVENT_PICKER_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** True for an EVENT candidate whose date is past the grace window. Projects
+ *  and standing budgets never age out here — a project's date is a deadline,
+ *  not the day the work happened. */
+export function isStalePastEvent(c: PickerCandidate, now: number): boolean {
+  return (
+    c.refKind === "event" &&
+    c.tier3Ts != null &&
+    c.tier3Ts < now - PAST_EVENT_PICKER_GRACE_MS
+  );
+}
+
 // ── Label formatting ─────────────────────────────────────────────────────
 const MONTH_NAMES = [
   "January",

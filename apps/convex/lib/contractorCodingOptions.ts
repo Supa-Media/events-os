@@ -12,7 +12,11 @@
 import type { QueryCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
 import { CENTRAL, type BudgetCadence } from "@events-os/shared";
-import { gatherForPickerCandidates, budgetDisplayNameFor } from "./forPickerCandidates";
+import {
+  gatherForPickerCandidates,
+  budgetDisplayNameFor,
+  isStalePastEvent,
+} from "./forPickerCandidates";
 import { listActiveChapters } from "./chapters";
 import { hasContractorPaymentsCompose } from "./contractorPaymentsAccess";
 import type { FinanceScope } from "./finance";
@@ -36,6 +40,9 @@ export async function codingBookFor(
   ctx: QueryCtx,
   scope: FinanceScope,
   scanLimit: number,
+  /** The event an existing agreement is already coded to — kept even when it
+   *  has aged out, so the edit screen still shows what it says. */
+  keepEventId?: string,
 ): Promise<CodingBook> {
   const { candidates } = await gatherForPickerCandidates(
     ctx,
@@ -43,8 +50,12 @@ export async function codingBookFor(
     scanLimit,
   );
   const book: CodingBook = { events: [], projects: [], budgets: [] };
+  const now = Date.now();
   for (const c of candidates) {
     if (!c.budget || c.budget.chapterId !== scope) continue;
+    // Events that already happened drop out after a grace window — see
+    // `PAST_EVENT_PICKER_GRACE_MS`.
+    if (isStalePastEvent(c, now) && c.refId !== keepEventId) continue;
     const ref: RefRow = {
       id: c.refId,
       label: c.label,
@@ -67,22 +78,24 @@ export async function codingBookFor(
  * Every chapter's book, for the CENTRAL composer.
  *
  * The central desk reads "Central — all chapters", and the person sitting at it
- * looks for a chapter's event the same way they find it on the Budgets tab. The
- * screen lists these greyed out, never pickable (founder, 2026-10-26): an
- * agreement is paid from the books that fund it, so a chapter's event has to be
- * moved to Central before central can pay for it. Listing it beats leaving it
- * silently missing, which reads as a bug. Only chapters the caller may compose
- * for are listed.
+ * looks for a chapter's event the same way they find it on the Budgets tab.
+ *
+ * A chapter's EVENTS and PROJECTS are pickable from central (founder,
+ * 2026-11-23, reversing #871's greyed-out list): central pays, the event keeps
+ * its chapter, and the spend books to central's books tagged with the event.
+ * A chapter's standing BUDGETS stay greyed — they are that chapter's money.
+ * Only chapters the caller may compose for are listed.
  */
 export async function chapterCodingBooks(
   ctx: QueryCtx,
   scanLimit: number,
+  keepEventId?: string,
 ): Promise<ChapterCodingBook[]> {
   const chapters = await listActiveChapters(ctx);
   const books: ChapterCodingBook[] = [];
   for (const chapter of chapters) {
     if (!(await hasContractorPaymentsCompose(ctx, chapter._id))) continue;
-    const book = await codingBookFor(ctx, chapter._id, scanLimit);
+    const book = await codingBookFor(ctx, chapter._id, scanLimit, keepEventId);
     if (book.events.length + book.projects.length + book.budgets.length === 0) continue;
     books.push({ scope: chapter._id, name: chapter.name, ...book });
   }

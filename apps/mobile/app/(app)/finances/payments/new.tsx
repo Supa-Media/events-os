@@ -103,9 +103,9 @@ function NewAgreementScreen() {
   // and at a chapter desk only the events/projects that chapter's budgets
   // actually fund. `newRequestOptions` above still supplies the funds and the
   // coding policy, which are the same question at either scope.
-  // At the central desk this also lists every chapter's book, greyed out: the
-  // desk reads "Central — all chapters", so a chapter's event has to be visible
-  // here with the reason it can't be picked, not silently missing.
+  // At the central desk this also lists every chapter's book: the desk reads
+  // "Central — all chapters", and central can pay for a chapter's event or
+  // project (it books to central, tagged with the event).
   const scopedFor = useQuery(
     api.contractorPayments.codingOptionsForScope,
     scope ? { scope, includeChapters: scope === "central" } : "skip",
