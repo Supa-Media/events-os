@@ -414,45 +414,53 @@ describe("the books follow the budget", () => {
     });
   });
 
-  test("the central desk sees a chapter's event, and still can't attach it", async () => {
+  test("central can pay for a chapter's event: it books to central, tagged with the event", async () => {
     const { s } = await setup();
-    const eventId = await run(s.t, async (ctx) => {
-      const eventTypeId = await ctx.db.insert("eventTypes", {
-        chapterId: s.chapterId,
-        name: "Showcase",
-        slug: "showcase",
-        version: 1,
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+    const DAY = 24 * 60 * 60 * 1000;
+    const seedChapterEvent = (name: string, eventDate: number) =>
+      run(s.t, async (ctx) => {
+        const eventTypeId = await ctx.db.insert("eventTypes", {
+          chapterId: s.chapterId,
+          name: "Showcase",
+          slug: "showcase",
+          version: 1,
+          createdBy: s.userId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+        const id = await ctx.db.insert("events", {
+          chapterId: s.chapterId,
+          eventTypeId,
+          templateVersion: 1,
+          name,
+          eventDate,
+          status: "planning",
+          createdBy: s.userId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+        const budgetId = await ctx.db.insert("budgets", {
+          chapterId: s.chapterId,
+          amountCents: 300_000,
+          type: "one_time",
+          refKind: "event",
+          scopeRefId: id,
+          cadence: "per_instance",
+          year: 2026,
+          label: name,
+          createdAt: Date.now(),
+        });
+        return { id, budgetId };
       });
-      const id = await ctx.db.insert("events", {
-        chapterId: s.chapterId,
-        eventTypeId,
-        templateVersion: 1,
-        name: "Brooklyn's Got Talent",
-        eventDate: Date.UTC(2026, 10, 14, 23),
-        status: "planning",
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-      await ctx.db.insert("budgets", {
-        chapterId: s.chapterId,
-        amountCents: 300_000,
-        type: "one_time",
-        refKind: "event",
-        scopeRefId: id,
-        cadence: "per_instance",
-        year: 2026,
-        label: "Brooklyn's Got Talent",
-        createdAt: Date.now(),
-      });
-      return id;
-    });
+    // Recent enough to still be in the picker (bills arrive after the night),
+    // and one long past that has aged out of it.
+    const { id: eventId, budgetId: chapterEventBudgetId } = await seedChapterEvent(
+      "Brooklyn's Got Talent",
+      Date.now() - 7 * DAY,
+    );
+    const { id: oldEventId } = await seedChapterEvent("Spring Showcase", Date.now() - 90 * DAY);
 
-    // The edit screens don't ask, so an existing agreement is never offered
-    // something it can't be re-coded to.
+    // Without `includeChapters` only central's own book is listed.
     const plain = await s.as.query(
       api.contractorPayments.codingOptionsForScope,
       { scope: "central" },
@@ -467,13 +475,45 @@ describe("the books follow the budget", () => {
     const book = composer.chapters.find((c) => c.scope === s.chapterId);
     expect(book?.events.map((e) => e.id)).toEqual([eventId]);
 
-    // Listed so the person can see it exists — the screen greys it out — but
-    // never attachable from central: it is New York's money.
+    // The past event has aged out of the picker...
+    expect(book?.events.map((e) => e.id)).not.toContain(oldEventId);
+    // ...but an agreement already coded to it still sees it on its edit screen.
+    const editing = await s.as.query(api.contractorPayments.codingOptionsForScope, {
+      scope: "central",
+      includeChapters: true,
+      keepEventId: oldEventId,
+    });
+    expect(
+      editing.chapters.find((c) => c.scope === s.chapterId)?.events.map((e) => e.id),
+    ).toContain(oldEventId);
+
+    // Founder, 2026-11-23: central pays for the chapter's event without moving
+    // it. The agreement is central's, coded to the event itself.
+    const { contractorPaymentId } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      { ...AGREEMENT, scope: "central", eventId },
+    );
+    const detail = await s.as.query(api.contractorPayments.get, { contractorPaymentId });
+    expect(detail.scope).toBe("central");
+    expect(detail.eventId).toBe(eventId);
+
+    // A central draft can be re-coded to it too.
+    const draft = await s.as.mutation(api.contractorPayments.createAgreement, {
+      ...AGREEMENT,
+      scope: "central",
+    });
+    await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId: draft.contractorPaymentId,
+      eventId,
+    });
+
+    // The chapter's own BUDGET is still the chapter's money: central can't
+    // charge an agreement against it.
     await expect(
       s.as.mutation(api.contractorPayments.createAgreement, {
         ...AGREEMENT,
         scope: "central",
-        eventId,
+        budgetId: chapterEventBudgetId,
       }),
     ).rejects.toThrow(ConvexError);
   });

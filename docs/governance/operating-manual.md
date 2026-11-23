@@ -409,9 +409,14 @@ central budget must be composed at the central desk and is paid by central; one
 coded to a chapter's budget is that chapter's. Mismatched coding is refused
 rather than silently re-scoped — moving an agreement between scopes changes who
 may approve it, and that is not a decision software should make on someone's
-behalf. The central desk lists every chapter's events, projects, and budgets
-so nothing looks missing, but greys them out: to pay a chapter's event from
-central, move the event to Central ("Belongs to") first. Central agreements are served to the contractor at `/contract/central`
+behalf. One exception runs the other way: **central may pay for any chapter's
+event or project** without moving it. The agreement stays central's — central
+reviews, approves, and pays it from central's account — and the cost posts to
+central's books, labelled with the event; it does not count against the
+chapter's own event budget. A chapter's standing budgets stay that chapter's to
+pay, so the central desk lists them greyed out. The "What's this for?" list
+drops an event 30 days after it happens, since late invoices are common.
+Central agreements are served to the contractor at `/contract/central`
 under the organization's own name; the word "central" is internal vocabulary and
 never appears to a payee.
 

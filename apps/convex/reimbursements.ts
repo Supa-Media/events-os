@@ -111,6 +111,7 @@ import { buildPaidNotice } from "./lib/reimbursementPaidEmail";
 import { appUrl, siteUrl } from "./lib/siteUrl";
 import {
   gatherForPickerCandidates,
+  isStalePastEvent,
   budgetDisplayNameFor,
   effectiveBudgetType,
 } from "./lib/forPickerCandidates";
@@ -1624,9 +1625,12 @@ async function forRequestOptions(
   chapterId: Id<"chapters">,
 ): Promise<{ events: ForOptionRow[]; projects: ForOptionRow[]; budgets: ForBudgetOptionRow[] }> {
   const { candidates } = await gatherForPickerCandidates(ctx, chapterId, ROLLUP_SCAN_LIMIT);
+  const now = Date.now();
   return {
+    // Events that already happened age out after a grace window — see
+    // `PAST_EVENT_PICKER_GRACE_MS`.
     events: candidates.flatMap((c) =>
-      c.refKind === "event" && isAttributableBudget(c.budget)
+      c.refKind === "event" && isAttributableBudget(c.budget) && !isStalePastEvent(c, now)
         ? [{ id: c.refId, label: c.label }]
         : [],
     ),

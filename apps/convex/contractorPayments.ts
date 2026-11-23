@@ -298,6 +298,36 @@ function assertSingleAttribution(args: {
 }
 
 /**
+ * May an agreement at `scope` name this event / project / budget?
+ *
+ * CENTRAL MAY PAY FOR ANY CHAPTER'S EVENT OR PROJECT (founder, 2026-11-23,
+ * reversing #871's "move it to Central first"). The event keeps its chapter;
+ * the agreement stays central's — reviewed, approved and paid by central — and
+ * the spend books to CENTRAL'S books, tagged with the event, never against the
+ * chapter's own event budget (the founder's pick between the two). So for a
+ * central agreement an event/project id only has to exist: event and project
+ * rows always live in a chapter's table, even central's own.
+ *
+ * A BUDGET is still same-scope only, at every desk: a budget IS a book's money,
+ * and naming New York's standing budget from central would book central's
+ * spend against it — the case `assertCodingMatchesScope` exists to refuse.
+ */
+async function requireCodingRef(
+  ctx: QueryCtx,
+  scope: FinanceScope,
+  doc: { chapterId?: string } | null,
+  label: "Event" | "Project" | "Budget",
+): Promise<void> {
+  if (scope === CENTRAL && label !== "Budget") {
+    if (!doc) {
+      throw new ConvexError({ code: "NOT_FOUND", message: `${label} not found.` });
+    }
+    return;
+  }
+  await requireInChapter(ctx, scope, doc, label);
+}
+
+/**
  * Did the proposed schedule actually differ from the one on file?
  *
  * Compared field by field rather than by identity because the detail screen
@@ -393,6 +423,9 @@ async function assertCodingMatchesScope(
     budgetId?: Id<"budgets">;
   },
 ): Promise<void> {
+  // Central paying for a chapter's event or project books to central, tagged
+  // with the event — see `requireCodingRef`. Only a BUDGET pins the scope.
+  if (scope === CENTRAL && !args.budgetId) return;
   const funding = await fundingScopeFor(ctx, args);
   if (funding == null || funding === scope) return;
   const fundingName = await scopeInternalName(ctx, funding);
@@ -617,15 +650,18 @@ async function createContractorPayment(
   // would reject EVERY category — the one shape of bug this loop's own
   // tightening was meant to prevent, inverted. Its check is existence, via the
   // resolver every other category call site uses.
-  for (const [id, table, label] of [
-    [args.eventId, "events", "Event"],
-    [args.projectId, "projects", "Project"],
-    [args.budgetId, "budgets", "Budget"],
-    [args.fundId, "funds", "Fund"],
+  // Central may name any chapter's event or project — see `requireCodingRef`.
+  for (const [id, label] of [
+    [args.eventId, "Event"],
+    [args.projectId, "Project"],
+    [args.budgetId, "Budget"],
   ] as const) {
     if (!id) continue;
     const doc = await ctx.db.get(id as Id<"events">);
-    await requireInChapter(ctx, args.chapterId, doc, label);
+    await requireCodingRef(ctx, args.chapterId, doc, label);
+  }
+  if (args.fundId) {
+    await requireInChapter(ctx, args.chapterId, await ctx.db.get(args.fundId), "Fund");
   }
   if (args.categoryId) await requireBudgetCategory(ctx, args.categoryId);
   // The spend books where the money comes from — see `assertCodingMatchesScope`.
@@ -1014,7 +1050,7 @@ export const updateTerms = mutation({
       ] as const) {
         if (!id) continue;
         const doc = await ctx.db.get(id as Id<"events">);
-        await requireInChapter(ctx, chapterId, doc, label);
+        await requireCodingRef(ctx, chapterId, doc, label);
       }
       patch.eventId = rest.eventId;
       patch.projectId = rest.projectId;
@@ -1867,19 +1903,22 @@ async function assertContractNotRateLimited(
 export const codingOptionsForScope = query({
   args: {
     scope: v.union(v.id("chapters"), v.literal(CENTRAL)),
-    /** Central desk only: also list every chapter's book, which the screen
-     *  shows greyed out with how to make it attachable. Read-only context —
-     *  nothing here can be coded to it from central. */
+    /** Central desk only: also list every chapter's book. Its events and
+     *  projects are pickable (central pays, books to central); its standing
+     *  budgets are shown greyed — see `chapterCodingBooks`. */
     includeChapters: v.optional(v.boolean()),
+    /** An existing agreement's event: listed even after it has aged out of
+     *  the picker, so the edit screen still shows what it is coded to. */
+    keepEventId: v.optional(v.id("events")),
   },
-  handler: async (ctx, { scope, includeChapters }) => {
+  handler: async (ctx, { scope, includeChapters, keepEventId }) => {
     await requireContractorPaymentsView(ctx, scope);
-    const own = await codingBookFor(ctx, scope, ROLLUP_SCAN_LIMIT);
+    const own = await codingBookFor(ctx, scope, ROLLUP_SCAN_LIMIT, keepEventId);
     return {
       ...own,
       chapters:
         includeChapters && scope === CENTRAL
-          ? await chapterCodingBooks(ctx, ROLLUP_SCAN_LIMIT)
+          ? await chapterCodingBooks(ctx, ROLLUP_SCAN_LIMIT, keepEventId)
           : [],
     };
   },

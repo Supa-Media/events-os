@@ -57,8 +57,8 @@ export type NewRequestOptions = FunctionReturnType<
   typeof api.reimbursements.newRequestOptions
 >;
 /** The coding vocabulary. `chapters` is only ever filled at the central
- *  central desk (`codingOptionsForScope`'s `includeChapters`): every chapter's
- *  own book, shown greyed out so a person can see why it can't be picked. */
+ *  desk (`codingOptionsForScope`'s `includeChapters`): every chapter's own
+ *  book — its events and projects pickable, its standing budgets greyed. */
 export type ForOptions = NewRequestOptions["forOptions"] & {
   chapters?: FunctionReturnType<
     typeof api.contractorPayments.codingOptionsForScope
@@ -212,10 +212,10 @@ type ForItem = {
 type Book = Pick<ForOptions, "events" | "projects" | "budgets">;
 
 /** `lockedTo` names the chapter whose book this is when it is NOT the desk's
- *  own: its rows are listed so a person can see the thing exists, but greyed
- *  out — an agreement is paid from the books that fund it, and the fix is to
- *  move the event or project to Central, never to cross-attach (founder,
- *  2026-10-26: Brooklyn's Got Talent had been made a New York event). */
+ *  own. Its EVENTS and PROJECTS are pickable: central pays for them and the
+ *  cost sits in central's books, tagged with the event (founder, 2026-11-23,
+ *  reversing the 2026-10-26 "move it to Central first" rule). Its standing
+ *  BUDGETS stay greyed out — those are that chapter's own money. */
 function pushBook(
   items: ForItem[],
   book: Book,
@@ -225,15 +225,14 @@ function pushBook(
 ) {
   const header = (word: string) => (owner ? `${owner} · ${word}` : word);
   const locked = (what: "event" | "project" | "budget") =>
-    lockedTo
-      ? {
-          disabled: true,
-          note:
-            what === "budget"
-              ? `${lockedTo}'s budget. Write this agreement from ${lockedTo}'s desk.`
-              : `Belongs to ${lockedTo}. To pay it from Central, open the ${what} and set "Belongs to" to Central.`,
-        }
-      : {};
+    !lockedTo
+      ? {}
+      : what === "budget"
+        ? {
+            disabled: true,
+            note: `${lockedTo}'s budget. Write this agreement from ${lockedTo}'s desk.`,
+          }
+        : { note: `${lockedTo}'s ${what}. Central pays, and it counts in Central's books.` };
   if (book.events.length > 0) {
     items.push({ value: `__grp_events_${key}`, label: header("Events"), header: true });
     for (const e of book.events) {
