@@ -2595,6 +2595,89 @@ describe("setCardControls (gates + tenancy)", () => {
   });
 });
 
+// ── Card-locked email (cardLockNotices) ──────────────────────────────────────
+
+async function scheduledLockNotices(
+  s: ChapterSetup,
+): Promise<Array<Record<string, unknown>>> {
+  const rows = await run(s.t, (ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  return rows
+    .filter((r) => r.name.includes("notifyCardLocked"))
+    .map((r) => r.args[0] as Record<string, unknown>);
+}
+
+describe("card-locked email", () => {
+  test("a manager locking an active card schedules the cardholder email", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const manager = await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder, last4: "4242" });
+
+    await s.as.mutation(api.cards.lockCard, { cardId });
+
+    const jobs = await scheduledLockNotices(s);
+    expect(jobs).toEqual([
+      { cardId, reason: "manager", lockedByPersonId: manager },
+    ]);
+    const contact = await s.t.query(internal.cardLockNotices.getCardLockContact, {
+      cardId,
+      lockedByPersonId: manager,
+    });
+    expect(contact).toEqual({
+      email: "person@publicworship.life",
+      cardholderName: "Holder",
+      last4: "4242",
+      lockedByName: "Manny Manager",
+    });
+  });
+
+  test("locking a card that's already locked sends nothing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder, status: "locked" });
+
+    await s.as.mutation(api.cards.lockCard, { cardId });
+
+    expect(await scheduledLockNotices(s)).toEqual([]);
+  });
+
+  test("the receipt sweep emails the holder of each card it locks", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const overdue = await seedCard(s, { cardholderPersonId: holder });
+    await seedCardTxn(s, { cardId: overdue, amountCents: 5000, ageDays: 8 });
+    const current = await seedCard(s, { cardholderPersonId: holder });
+    await seedCardTxn(s, { cardId: current, amountCents: 2000 });
+
+    await s.t.mutation(internal.cards.autoLockOverdueCards, {});
+
+    expect(await scheduledLockNotices(s)).toEqual([
+      { cardId: overdue, reason: "receipt" },
+    ]);
+  });
+
+  test("no email once the card is unlocked again before the job runs", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    await s.as.mutation(api.cards.lockCard, { cardId });
+    await s.as.mutation(api.cards.unlockCard, { cardId });
+
+    expect(
+      await s.t.query(internal.cardLockNotices.getCardLockContact, { cardId }),
+    ).toBeNull();
+  });
+});
+
 // ── WP-C.1: freezeCard / unfreezeCard (self-serve, holder-only) ──────────────
 
 describe("freezeCard / unfreezeCard", () => {
