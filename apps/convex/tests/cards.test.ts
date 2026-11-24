@@ -2700,6 +2700,82 @@ describe("card status emails", () => {
     ]);
   });
 
+  test("the job records on the card whether the email went out", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const manager = await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const noAddress = await seedPerson(s, { name: "No Address", pwEmail: null });
+    const cardId = await seedCard(s, { cardholderPersonId: holder, status: "locked" });
+    const bare = await seedCard(s, { cardholderPersonId: noAddress, status: "locked" });
+
+    const prevKey = process.env.RESEND_API_KEY;
+    const realFetch = globalThis.fetch;
+    try {
+      // No provider key → nothing could be sent → "failed", with the address.
+      delete process.env.RESEND_API_KEY;
+      await s.t.action(internal.cardStatusNotices.notifyCardStatus, {
+        cardId,
+        event: "locked_manager",
+        actorPersonId: manager,
+      });
+      let card = await run(s.t, (ctx) => ctx.db.get(cardId));
+      expect(card?.lastStatusEmail).toMatchObject({
+        event: "locked_manager",
+        outcome: "failed",
+        to: "person@publicworship.life",
+      });
+
+      // Provider accepts it → "sent", and the manager's list shows it.
+      process.env.RESEND_API_KEY = "re_test";
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ id: "email_1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })) as typeof fetch;
+      await s.t.action(internal.cardStatusNotices.notifyCardStatus, {
+        cardId,
+        event: "locked_manager",
+        actorPersonId: manager,
+      });
+      card = await run(s.t, (ctx) => ctx.db.get(cardId));
+      expect(card?.lastStatusEmail?.outcome).toBe("sent");
+      const listed = await s.as.query(api.cards.listCards, {});
+      expect(listed.find((c) => c.id === cardId)?.lastStatusEmail?.outcome).toBe("sent");
+
+      // No address on file → "no_address", nothing sent.
+      await s.t.action(internal.cardStatusNotices.notifyCardStatus, {
+        cardId: bare,
+        event: "locked_receipt",
+      });
+      const bareCard = await run(s.t, (ctx) => ctx.db.get(bare));
+      expect(bareCard?.lastStatusEmail).toMatchObject({
+        event: "locked_receipt",
+        outcome: "no_address",
+      });
+      expect(bareCard?.lastStatusEmail?.to).toBeUndefined();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (prevKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = prevKey;
+    }
+  });
+
+  test("a stale job records nothing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    await s.t.action(internal.cardStatusNotices.notifyCardStatus, {
+      cardId,
+      event: "locked_manager",
+    });
+
+    const card = await run(s.t, (ctx) => ctx.db.get(cardId));
+    expect(card?.lastStatusEmail).toBeUndefined();
+  });
+
   test("no email once the card has moved on before the job runs", async () => {
     const t = newT();
     const s = await setupChapter(t);

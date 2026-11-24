@@ -150,3 +150,57 @@ export function toFriendlyRevealError(err: unknown): unknown {
   }
   return err;
 }
+
+const STATUS_EMAIL_NOUN: Record<
+  NonNullable<CardSummary["lastStatusEmail"]>["event"],
+  string
+> = {
+  locked_manager: "Lock",
+  locked_receipt: "Receipt lock",
+  unlocked_manager: "Unlock",
+  unlocked_receipt: "Unlock",
+  canceled: "Cancel",
+};
+
+/** `Nov 23, 10:23 PM` in the finance timezone. */
+function shortDateTime(ts: number): string {
+  return new Date(ts).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/New_York",
+  });
+}
+
+/** What the cardholder was told about their card's last lock/unlock/cancel,
+ *  for the manager's Cards list: a short line under the status chip plus the
+ *  full sentence for its tooltip / screen reader. Null when no such email has
+ *  been recorded. */
+export function statusEmailNote(
+  email: CardSummary["lastStatusEmail"],
+): { short: string; full: string; ok: boolean } | null {
+  if (!email) return null;
+  const noun = STATUS_EMAIL_NOUN[email.event];
+  const when = shortDateTime(email.at);
+  switch (email.outcome) {
+    case "sent":
+      return {
+        short: `Emailed ${shortDate(email.at)}`,
+        full: `${noun} email sent ${when}${email.to ? ` to ${email.to}` : ""}`,
+        ok: true,
+      };
+    case "no_address":
+      return {
+        short: "Not emailed",
+        full: `${noun} email not sent ${when}: no email address on file`,
+        ok: false,
+      };
+    default:
+      return {
+        short: "Email failed",
+        full: `${noun} email failed ${when}${email.to ? ` (to ${email.to})` : ""}`,
+        ok: false,
+      };
+  }
+}

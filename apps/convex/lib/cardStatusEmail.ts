@@ -26,15 +26,9 @@
 import { RECEIPT_GRACE_DAYS } from "@events-os/shared";
 import { escapeHtml } from "./html";
 import { emailButtonRow, emailHeading, emailParagraph, emailShell } from "./emailShell";
+import type { CardStatusEvent } from "./cardStatusEvents";
+export { CARD_STATUS_EVENTS, type CardStatusEvent } from "./cardStatusEvents";
 
-export const CARD_STATUS_EVENTS = [
-  "locked_manager",
-  "locked_receipt",
-  "unlocked_manager",
-  "unlocked_receipt",
-  "canceled",
-] as const;
-export type CardStatusEvent = (typeof CARD_STATUS_EVENTS)[number];
 
 /** The card status each event leaves behind — the notifier sends only while
  *  the card is still in it (an unlock right after a lock cancels the lock

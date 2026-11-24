@@ -1,5 +1,6 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
+import { lastStatusEmailValidator } from "../lib/cardStatusEvents";
 import {
   FUND_RESTRICTIONS,
   BUDGET_CATEGORY_KINDS,
@@ -1599,6 +1600,9 @@ export const cards = defineTable({
   // every lock reason at once) may reverse it. Absent/false for every other
   // "locked" reason.
   frozenByHolder: v.optional(v.boolean()),
+  // The last lock/unlock/cancel email to the cardholder and whether it went
+  // out (`cardStatusNotices.ts`), shown on the manager's Cards list.
+  lastStatusEmail: v.optional(lastStatusEmailValidator),
   createdBy: v.optional(v.id("users")),
   createdAt: v.number(),
 })
