@@ -181,6 +181,7 @@ import {
 import { markPublicationsStale } from "./lib/publicLedgerStale";
 import { requireRepaymentsCollect } from "./lib/repaymentsAccess";
 import { buildRepaymentReceipt } from "./lib/personalRepaymentReceiptEmail";
+import { scheduleCardStatusEmail } from "./cardStatusNotices";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -1212,7 +1213,7 @@ export const lockCard = mutation({
   returns: cardSummaryValidator,
   handler: async (ctx, { cardId }): Promise<CardSummary> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
+    const access = await requireFinanceManager(ctx, chapterId);
     const card = await requireOwnedCard(ctx, chapterId, cardId);
     if (!canEnforceCardLock(card)) {
       throw new ConvexError({
@@ -1222,6 +1223,12 @@ export const lockCard = mutation({
       });
     }
     await ctx.db.patch(card._id, { status: "locked" });
+    // Tell the cardholder — only when this lock is what turned the card off.
+    // Re-locking an already-locked card (their own freeze, the receipt lock)
+    // changes nothing they'd notice, so it sends nothing.
+    if (card.status === "active") {
+      await scheduleCardStatusEmail(ctx, card._id, "locked_manager", access.personId);
+    }
     return buildCardSummary(ctx, (await ctx.db.get(card._id))!);
   },
 });
@@ -1234,13 +1241,17 @@ export const unlockCard = mutation({
   returns: cardSummaryValidator,
   handler: async (ctx, { cardId }): Promise<CardSummary> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
+    const access = await requireFinanceManager(ctx, chapterId);
     const card = await requireOwnedCard(ctx, chapterId, cardId);
     await ctx.db.patch(card._id, {
       status: "active",
       receiptGraceEndsAt: undefined,
       frozenByHolder: undefined,
     });
+    // Tell the cardholder only when this actually turned the card back on.
+    if (card.status === "locked") {
+      await scheduleCardStatusEmail(ctx, card._id, "unlocked_manager", access.personId);
+    }
     return buildCardSummary(ctx, (await ctx.db.get(card._id))!);
   },
 });
@@ -1602,7 +1613,7 @@ export const beginCancelCard = internalMutation({
   }),
   handler: async (ctx, { cardId }) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
+    const access = await requireFinanceManager(ctx, chapterId);
     const card = await requireOwnedCard(ctx, chapterId, cardId);
     if (card.status !== "canceled") {
       await ctx.db.patch(card._id, {
@@ -1610,6 +1621,7 @@ export const beginCancelCard = internalMutation({
         frozenByHolder: undefined,
         receiptGraceEndsAt: undefined,
       });
+      await scheduleCardStatusEmail(ctx, card._id, "canceled", access.personId);
     }
     const fresh = (await ctx.db.get(card._id))!;
     return {
@@ -5554,6 +5566,7 @@ export async function unlockCardIfReceiptsResolved(
   );
   if (stillOverdue) return false;
   await ctx.db.patch(cardId, { status: "active", receiptGraceEndsAt: undefined });
+  await scheduleCardStatusEmail(ctx, cardId, "unlocked_receipt");
   return true;
 }
 
@@ -5612,12 +5625,14 @@ export const autoLockOverdueCards = internalMutation({
           status: "locked",
           receiptGraceEndsAt: earliest + RECEIPT_GRACE_DAYS * DAY_MS,
         });
+        await scheduleCardStatusEmail(ctx, card._id, "locked_receipt");
         lockedCount++;
       } else if (isAutoLocked && overdue.length === 0) {
         await ctx.db.patch(card._id, {
           status: "active",
           receiptGraceEndsAt: undefined,
         });
+        await scheduleCardStatusEmail(ctx, card._id, "unlocked_receipt");
         unlockedCount++;
       }
     }
