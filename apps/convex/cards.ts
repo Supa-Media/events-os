@@ -329,6 +329,7 @@ interface CardSummary {
   receiptGraceEndsAt: number | null;
   frozenByHolder: boolean;
   spentThisMonthCents: number;
+  lastStatusEmail: Infer<typeof lastStatusEmailValidator> | null;
 }
 
 interface CardRequestSummary {
