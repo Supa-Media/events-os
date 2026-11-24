@@ -7,9 +7,9 @@
  * them an email", then yes to unlock and cancel too. The events:
  *
  *  - `locked_manager` — a finance manager pressed Lock card
- *    (`cards.ts#lockCard`). Only a manager can lift it, so the email says who
- *    to ask. It does NOT guess at a reason (the app stores none) and does NOT
- *    promise a reply time.
+ *    (`cards.ts#lockCard`). The email says "your local treasurer" rather than
+ *    naming whoever pressed it. It does NOT guess at a reason (the app stores
+ *    none) and does NOT promise a reply time.
  *  - `locked_receipt` — the daily receipt sweep
  *    (`cards.ts#autoLockOverdueCards`) locked it because a charge went
  *    `RECEIPT_GRACE_DAYS` without a receipt. Adding the receipt unlocks it
@@ -49,8 +49,6 @@ export interface CardStatusEmailInput {
   cardholderName: string;
   /** Last four digits of the card, when known. */
   last4: string | null;
-  /** The manager who made the change (manager events only), when known. */
-  actorName: string | null;
   /** Absolute link for the call to action, or null when APP_URL is unset. */
   link: string | null;
 }
@@ -63,7 +61,9 @@ export function buildCardStatusEmail(input: CardStatusEmailInput): {
     ? `your Public Worship card ending in ${escapeHtml(input.last4)}`
     : "your Public Worship card";
   const hi = `Hi ${escapeHtml(input.cardholderName)},`;
-  const actor = input.actorName ? escapeHtml(input.actorName) : null;
+  // Never the manager's name: the cardholder hears it from "your local
+  // treasurer" (Dev2, 2026-11-24), whoever pressed the button.
+  const who = "your local treasurer";
   const button = (label: string) =>
     input.link
       ? emailButtonRow(input.link, label)
@@ -75,9 +75,9 @@ export function buildCardStatusEmail(input: CardStatusEmailInput): {
     case "locked_manager":
       subject = "Your Public Worship card has been locked";
       body = [
-        emailParagraph(`${hi} ${actor ?? "A finance manager"} locked ${card}. Purchases on it will be declined until it's unlocked.`),
+        emailParagraph(`${hi} ${who} locked ${card}. Purchases on it will be declined until it's unlocked.`),
         emailParagraph(
-          `If you're not sure why, or you need it turned back on, talk to ${actor ?? "your finance manager"}. Only a finance manager can unlock it.`,
+          `If you're not sure why, or you need it turned back on, talk to ${who}.`,
         ),
         button("View your card →"),
       ];
@@ -97,7 +97,7 @@ export function buildCardStatusEmail(input: CardStatusEmailInput): {
     case "unlocked_manager":
       subject = "Your Public Worship card is unlocked";
       body = [
-        emailParagraph(`${hi} ${actor ?? "A finance manager"} unlocked ${card}. You can use it again.`),
+        emailParagraph(`${hi} ${who} unlocked ${card}. You can use it again.`),
         button("View your card →"),
       ];
       break;
@@ -111,9 +111,9 @@ export function buildCardStatusEmail(input: CardStatusEmailInput): {
     case "canceled":
       subject = "Your Public Worship card has been canceled";
       body = [
-        emailParagraph(`${hi} ${actor ?? "A finance manager"} canceled ${card}. It can't be used again, and any purchase on it will be declined.`),
+        emailParagraph(`${hi} ${who} canceled ${card}. It can't be used again, and any purchase on it will be declined.`),
         emailParagraph(
-          `If you think this is a mistake or you need a new card, talk to ${actor ?? "your finance manager"}.`,
+          `If you think this is a mistake or you need a new card, talk to ${who}.`,
         ),
         button("View your card →"),
       ];

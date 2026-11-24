@@ -2630,7 +2630,6 @@ describe("card status emails", () => {
       email: "person@publicworship.life",
       cardholderName: "Holder",
       last4: "4242",
-      actorName: "Manny Manager",
     });
   });
 

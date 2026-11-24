@@ -55,21 +55,18 @@ export const getCardStatusContact = internalQuery({
       email: v.union(v.string(), v.null()),
       cardholderName: v.string(),
       last4: v.union(v.string(), v.null()),
-      actorName: v.union(v.string(), v.null()),
     }),
     v.null(),
   ),
-  handler: async (ctx, { cardId, event, actorPersonId }) => {
+  handler: async (ctx, { cardId, event }) => {
     const card = await ctx.db.get(cardId);
     if (!card || card.status !== statusAfter(event)) return null;
     const person = await ctx.db.get(card.cardholderPersonId);
     if (!person) return null;
-    const actor = actorPersonId ? await ctx.db.get(actorPersonId) : null;
     return {
       email: person.pwEmail ?? person.email ?? null,
       cardholderName: person.name,
       last4: card.last4 ?? null,
-      actorName: actor?.name ?? null,
     };
   },
 });
@@ -120,7 +117,6 @@ export const notifyCardStatus = internalAction({
           event,
           cardholderName: contact.cardholderName,
           last4: contact.last4,
-          actorName: contact.actorName,
           link,
         });
         outcome = (await sendEmailReporting(ctx, { to, subject, html }))
