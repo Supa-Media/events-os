@@ -182,6 +182,7 @@ import { markPublicationsStale } from "./lib/publicLedgerStale";
 import { requireRepaymentsCollect } from "./lib/repaymentsAccess";
 import { buildRepaymentReceipt } from "./lib/personalRepaymentReceiptEmail";
 import { scheduleCardStatusEmail } from "./cardStatusNotices";
+import { lastStatusEmailValidator } from "./lib/cardStatusEvents";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -253,6 +254,9 @@ const cardSummaryValidator = v.object({
   // field's doc comment).
   frozenByHolder: v.boolean(),
   spentThisMonthCents: v.number(),
+  // The last lock/unlock/cancel email to the cardholder, or null if none has
+  // been sent since these were recorded (2026-11-24).
+  lastStatusEmail: v.union(lastStatusEmailValidator, v.null()),
 });
 
 const cardRequestSummaryValidator = v.object({
@@ -325,6 +329,7 @@ interface CardSummary {
   receiptGraceEndsAt: number | null;
   frozenByHolder: boolean;
   spentThisMonthCents: number;
+  lastStatusEmail: Infer<typeof lastStatusEmailValidator> | null;
 }
 
 interface CardRequestSummary {
@@ -612,6 +617,7 @@ async function buildCardSummary(
     receiptGraceEndsAt: card.receiptGraceEndsAt ?? null,
     frozenByHolder: card.frozenByHolder === true,
     spentThisMonthCents,
+    lastStatusEmail: card.lastStatusEmail ?? null,
   };
 }
 

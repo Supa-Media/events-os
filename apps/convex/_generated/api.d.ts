@@ -134,6 +134,7 @@ import type * as lib_builtInTemplates from "../lib/builtInTemplates.js";
 import type * as lib_campaignKind from "../lib/campaignKind.js";
 import type * as lib_campaignsAccess from "../lib/campaignsAccess.js";
 import type * as lib_cardStatusEmail from "../lib/cardStatusEmail.js";
+import type * as lib_cardStatusEvents from "../lib/cardStatusEvents.js";
 import type * as lib_centralReach from "../lib/centralReach.js";
 import type * as lib_chapters from "../lib/chapters.js";
 import type * as lib_chaseAccess from "../lib/chaseAccess.js";
@@ -640,6 +641,7 @@ declare const fullApi: ApiFromModules<{
   "lib/campaignKind": typeof lib_campaignKind;
   "lib/campaignsAccess": typeof lib_campaignsAccess;
   "lib/cardStatusEmail": typeof lib_cardStatusEmail;
+  "lib/cardStatusEvents": typeof lib_cardStatusEvents;
   "lib/centralReach": typeof lib_centralReach;
   "lib/chapters": typeof lib_chapters;
   "lib/chaseAccess": typeof lib_chaseAccess;

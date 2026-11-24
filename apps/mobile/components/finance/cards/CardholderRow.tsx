@@ -28,6 +28,7 @@ import {
   Cell,
   ContextMenu,
   Icon,
+  InfoTooltip,
   Row,
   useAnchor,
   type ContextMenuAction,
@@ -37,6 +38,7 @@ import {
   cardStatusBadge,
   cardTypeLabel,
   receiptStatus,
+  statusEmailNote,
   trainingBadge,
   type CardSummary,
 } from "./helpers";
@@ -58,6 +60,7 @@ export function CardholderRow({
 }) {
   const { ref, anchor, visible, open, close } = useAnchor();
   const status = cardStatusBadge(card.status, card.frozenByHolder);
+  const emailNote = statusEmailNote(card.lastStatusEmail);
   const receipts = receiptStatus(card);
   const receiptDue = receipts.tone === "warn";
   const isCanceled = card.status === "canceled";
@@ -194,6 +197,25 @@ export function CardholderRow({
             </Pressable>
           ) : null}
         </View>
+        {/* Whether the cardholder was emailed about the last lock / unlock /
+            cancel (`cardStatusNotices.ts`). Full detail on hover. */}
+        {emailNote ? (
+          <View className="mt-0.5 flex-row items-center justify-end gap-1">
+            <Text
+              className="text-xs"
+              style={{ color: emailNote.ok ? colors.faint : colors.warn }}
+              numberOfLines={1}
+              accessibilityLabel={emailNote.full}
+            >
+              {emailNote.short}
+            </Text>
+            <InfoTooltip
+              text={emailNote.full}
+              size={10}
+              color={emailNote.ok ? colors.faint : colors.warn}
+            />
+          </View>
+        ) : null}
       </Cell>
 
       {actions.length > 0 ? (
