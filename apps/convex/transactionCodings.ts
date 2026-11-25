@@ -2051,18 +2051,35 @@ export const reviewQueue = query({
     };
 
     const limit = Math.min(args.limit ?? CODING_PAGE_SIZE, CODING_PAGE_SIZE);
-    const pending: Doc<"transactionCodings">[] = [];
+    const submitted: Doc<"transactionCodings">[] = [];
+    const sentBack: Doc<"transactionCodings">[] = [];
     for (const book of books) {
-      const rows = await ctx.db
-        .query("transactionCodings")
-        .withIndex("by_chapter_and_status", (q) =>
-          q.eq("chapterId", book).eq("status", "submitted"),
-        )
-        .take(CODING_SCAN_LIMIT);
-      pending.push(...rows);
+      submitted.push(
+        ...(await ctx.db
+          .query("transactionCodings")
+          .withIndex("by_chapter_and_status", (q) =>
+            q.eq("chapterId", book).eq("status", "submitted"),
+          )
+          .take(CODING_SCAN_LIMIT)),
+      );
+      // SENT-BACK codings follow, so a reviewer can approve one whose missing
+      // piece has since arrived (Dev2, 2026-11-25: a charge sent back for "no
+      // receipt" got its receipt a week later and was never resubmitted —
+      // and the Coding tab, where reviewers look, didn't list it at all).
+      sentBack.push(
+        ...(await ctx.db
+          .query("transactionCodings")
+          .withIndex("by_chapter_and_status", (q) =>
+            q.eq("chapterId", book).eq("status", "changes_requested"),
+          )
+          .take(CODING_SCAN_LIMIT)),
+      );
     }
-    // Oldest submission first: this queue is a clock, not an inbox.
-    pending.sort((a, b) => a.submittedAt - b.submittedAt);
+    // Oldest submission first: this queue is a clock, not an inbox. Awaiting
+    // review always outranks sent back — those are the ones nobody has read.
+    submitted.sort((a, b) => a.submittedAt - b.submittedAt);
+    sentBack.sort((a, b) => a.submittedAt - b.submittedAt);
+    const pending = [...submitted, ...sentBack];
     const page = pending.slice(0, limit);
 
     const rows: Infer<typeof reviewQueueRow>[] = [];

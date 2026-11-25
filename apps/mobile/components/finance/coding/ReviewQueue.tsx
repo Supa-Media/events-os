@@ -96,10 +96,24 @@ export function ReviewQueue({
     [allRows],
   );
   const shown = useMemo(() => filterByReviewer(allRows, who), [allRows, who]);
-  const { decidable, waitingOnOthers } = useMemo(() => reviewOrder(shown), [shown]);
+  const { decidable: decidableAll, waitingOnOthers } = useMemo(
+    () => reviewOrder(shown),
+    [shown],
+  );
+  // Sent-back codings come after the ones nobody has read yet, under their
+  // own heading: a reviewer can still approve one once what it lacked (a
+  // receipt, usually) has arrived, without waiting for a resubmit.
+  const decidable = useMemo(
+    () => decidableAll.filter((r) => r.coding.status !== "changes_requested"),
+    [decidableAll],
+  );
+  const sentBack = useMemo(
+    () => decidableAll.filter((r) => r.coding.status === "changes_requested"),
+    [decidableAll],
+  );
   const ordered = useMemo(
-    () => [...decidable, ...waitingOnOthers],
-    [decidable, waitingOnOthers],
+    () => [...decidable, ...sentBack, ...waitingOnOthers],
+    [decidable, sentBack, waitingOnOthers],
   );
   const navRows = useMemo(
     () => ordered.map((r) => ({ id: r.transactionId })),
@@ -259,6 +273,23 @@ export function ReviewQueue({
           onPress={() => setOpenId(r.transactionId)}
         />
       ))}
+      {sentBack.length > 0 ? (
+        <>
+          <Text className="mt-3 text-2xs font-semibold uppercase tracking-wide text-muted">
+            Sent back — approve if it&apos;s fine now
+          </Text>
+          {sentBack.map((r) => (
+            <ReviewCard
+              key={r.transactionId}
+              row={r}
+              showBook={showBook}
+              compact={wide}
+              selected={wide && r.transactionId === effectiveId}
+              onPress={() => setOpenId(r.transactionId)}
+            />
+          ))}
+        </>
+      ) : null}
       {waitingOnOthers.length > 0 ? (
         <>
           <Text className="mt-3 text-2xs font-semibold uppercase tracking-wide text-muted">

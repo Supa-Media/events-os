@@ -262,16 +262,25 @@ export function ReviewDecisionPane({
                 Needs a budget before it can be approved. Set it in the record above.
               </Text>
             ) : null}
+            {row.coding.status === "changes_requested" ? (
+              <Text className="text-center text-xs text-muted">
+                Sent back
+                {row.coding.reviewNote ? `: “${row.coding.reviewNote}”` : ""}. Approve
+                it if that&apos;s been fixed.
+              </Text>
+            ) : null}
             <View className="flex-row gap-2">
-              <View className="flex-1">
-                <Button
-                  title="Send back"
-                  variant="secondary"
-                  icon="corner-up-left"
-                  onPress={() => onSendingBackChange(true)}
-                  className="w-full"
-                />
-              </View>
+              {row.coding.status !== "changes_requested" ? (
+                <View className="flex-1">
+                  <Button
+                    title="Send back"
+                    variant="secondary"
+                    icon="corner-up-left"
+                    onPress={() => onSendingBackChange(true)}
+                    className="w-full"
+                  />
+                </View>
+              ) : null}
               <View className="flex-1">
                 <Button
                   title="Approve"
