@@ -735,7 +735,15 @@ function ledgerHtml(s: PublicStatement): string {
           // income already counted above arriving in the bank. Rendering the
           // accusatory placeholder here made complete rows look broken.
           `<span class="nopurpose">Money moved between our own accounts — nothing earned or spent</span>`
-        : `<span class="nopurpose">No published explanation for this line</span>`
+        : e.direction === "in"
+          ? // MONEY IN OWES NO EXPLANATION (Dev2, 2026-11-25: "we don't need
+            // an explanation for credits/payouts but we definitely need an
+            // explanation for debits/expenses"). The disclosure count already
+            // skipped inflows (`canCarryExplanation` is spend-only), but the
+            // row itself still printed the missing-explanation placeholder,
+            // so a credit read as a gap the page then said wasn't one.
+            `<span class="nopurpose">Money received</span>`
+          : `<span class="nopurpose">No published explanation for this line</span>`
   }${contextHtml(e)}</td>
   <td>${esc(e.categoryLabel ?? "—")}${
     e.projectLabel || e.eventLabel

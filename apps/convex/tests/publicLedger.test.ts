@@ -1328,6 +1328,13 @@ describe("a pre-policy month discloses what a reader can see", () => {
     expect(
       statement.entries.some((e) => e.counterparty === "A generous person"),
     ).toBe(true);
+
+    // And its ROW doesn't print the missing-explanation placeholder either —
+    // only the U-Haul charge does (Dev2, 2026-11-25: credits need no
+    // explanation, debits do).
+    const body = await (await s.t.fetch("/finances/2024-06", {})).text();
+    expect(body.split("No published explanation for this line").length - 1).toBe(1);
+    expect(body).toContain("Money received");
   });
 
   test("an internal movement is not counted as a missing explanation", async () => {
