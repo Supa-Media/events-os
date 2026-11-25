@@ -450,7 +450,8 @@ describe("privacy holds at the storage layer", () => {
     expect(entry.purpose).not.toContain("Michael Reid");
   });
 
-  test("an unapproved coding does not publish its purpose", async () => {
+  test("a month with a coding waiting for review refuses to publish", async () => {
+    // Dev2, 2026-11-25: codings must be reviewed before the month goes out.
     const s = await asPublisher();
     const txnId = await insertTxn(s);
     await run(s.t, async (ctx) => {
@@ -465,6 +466,34 @@ describe("privacy holds at the storage layer", () => {
         updatedAt: Date.now(),
       });
       await ctx.db.patch(txnId, { codingState: "submitted" });
+    });
+    await s.as.mutation(api.publicLedger.submit, { periodKey: AUG_KEY });
+    const refused = await s.as
+      .mutation(api.publicLedger.publish, { periodKey: AUG_KEY })
+      .then(
+        () => null,
+        (e) => e as ConvexError<{ code: string }>,
+      );
+    expect(refused).toBeInstanceOf(ConvexError);
+    expect(refused!.data.code).toBe("CODINGS_AWAITING_REVIEW");
+    expect(await statementOf(s)).toBeNull();
+  });
+
+  test("a sent-back coding does not publish its purpose, and does not block", async () => {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s);
+    await run(s.t, async (ctx) => {
+      await ctx.db.insert("transactionCodings", {
+        transactionId: txnId,
+        chapterId: s.chapterId,
+        expenseType: "general",
+        businessPurpose: "Something a reviewer sent back",
+        status: "changes_requested",
+        codedByUserId: s.userId,
+        submittedAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.db.patch(txnId, { codingState: "changes_requested" });
     });
     await publishMonth(s);
 

@@ -738,6 +738,7 @@ export const publish = mutation({
     const sandboxMode = await readSandbox(ctx);
     const snapshot = await buildSnapshot(ctx, scope, args.periodKey, sandboxMode);
     assertPublishable(snapshot);
+    assertCodingsReviewed(snapshot);
 
     const approvalParty = resolveApprovalParty(publisherPersonId, preparedByPersonId);
     await writeRevision(ctx, {
@@ -820,6 +821,7 @@ export const republish = mutation({
     const sandboxMode = await readSandbox(ctx);
     const snapshot = await buildSnapshot(ctx, scope, args.periodKey, sandboxMode);
     assertPublishable(snapshot);
+    assertCodingsReviewed(snapshot);
 
     // Caller as preparer AND publisher — recorded as a single-party decision.
     const approvalParty = resolveApprovalParty(publisherPersonId, publisherPersonId);
@@ -919,6 +921,33 @@ export function assertPublishable(snapshot: Snapshot): void {
     throw new ConvexError({
       code: "SNAPSHOT_TOO_LARGE",
       message: `This month has more than ${MAX_PUBLISHED_ENTRIES} lines, which is past what one published revision holds. Split the period or raise the cap deliberately.`,
+    });
+  }
+}
+
+/**
+ * NO MONTH GOES OUT WHILE A CODING IN IT IS WAITING FOR REVIEW (Dev2,
+ * 2026-11-25: "we shouldn't be able to publish a month without making sure
+ * that all codings have been approved" … "the codings just need to be
+ * reviewed").
+ *
+ * "Reviewed" means a reviewer has ACTED: approved it, or sent it back. A
+ * sent-back coding doesn't block — somebody looked and said no, and the row
+ * publishes as unexplained. Neither does a charge with nothing written: that
+ * is a gap the page discloses, and blocking on it would freeze every month
+ * from before the coding policy. What blocks is the one state where the
+ * explanation exists and is merely unread, because publishing then puts a
+ * blank on the public record that a reviewer could have filled in minutes.
+ *
+ * Publish and republish only. Sending a month for review stays open —
+ * that is a request for a second look, not a statement to the world.
+ */
+export function assertCodingsReviewed(snapshot: Snapshot): void {
+  const waiting = snapshot.awaitingReviewCount ?? 0;
+  if (waiting > 0) {
+    throw new ConvexError({
+      code: "CODINGS_AWAITING_REVIEW",
+      message: `${waiting} explanation${waiting === 1 ? " is" : "s are"} still waiting for a reviewer. Approve or send back every coding in this month (Finances → Coding), then publish.`,
     });
   }
 }

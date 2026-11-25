@@ -186,6 +186,11 @@ export function PublishMonthBody({
     previewPage.open({ scope, periodKey: month.periodKey });
 
   const noteTooShort = note.trim().length < MIN_AMENDMENT_NOTE_LENGTH;
+  /** Codings in this month still waiting for a reviewer. The server refuses
+   *  publish/republish while any are (`publicLedger.ts#assertCodingsReviewed`);
+   *  the buttons say so up front rather than letting the press fail. */
+  const awaitingReview = preview?.awaitingReviewCount ?? 0;
+  const reviewBlocks = awaitingReview > 0;
 
   return (
     <View className="mt-3 border-t border-border pt-3">
@@ -287,6 +292,13 @@ export function PublishMonthBody({
               figure goes in before you publish.
             </Text>
           ) : null}
+          {reviewBlocks ? (
+            <Text className="mt-2 text-sm font-semibold text-danger">
+              {awaitingReview} explanation{awaitingReview === 1 ? " is" : "s are"}{" "}
+              still waiting for a reviewer. Approve or send back every coding in
+              this month under Finances → Coding, then publish.
+            </Text>
+          ) : null}
           {preview.truncated || preview.overCap ? (
             <Text className="mt-2 text-sm font-semibold text-danger">
               This month is too large to snapshot safely, so it can&apos;t be
@@ -336,6 +348,7 @@ export function PublishMonthBody({
                     : "Publish to the public page"
                 }
                 loading={busy}
+                disabled={busy || reviewBlocks}
                 onPress={() =>
                   void act(() => publish({ scope, periodKey: month.periodKey } as never))
                 }
@@ -359,6 +372,7 @@ export function PublishMonthBody({
                   : "Publish to the public page"
               }
               loading={busy}
+              disabled={busy || reviewBlocks}
               onPress={() => void act(() => publish({ scope, periodKey: month.periodKey } as never))}
             />
             <TextField
@@ -449,7 +463,7 @@ export function PublishMonthBody({
               <Button
                 title={`Correct and republish now (revision ${(month.liveRevision ?? 1) + 1})`}
                 loading={busy}
-                disabled={busy || noteTooShort}
+                disabled={busy || noteTooShort || reviewBlocks}
                 onPress={() =>
                   void act(() =>
                     republish({

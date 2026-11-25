@@ -2092,7 +2092,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "We publish gaps rather than around them",
-        text: "A month with unexplained rows still publishes, with the blanks showing. Blocking would mean publishing nothing for a year. Hiding those rows, or letting them look documented, would be a claim we can't back. The only thing refused outright is an incomplete ledger presented as complete.",
+        text: "A month with unexplained rows still publishes, with the blanks showing. Blocking would mean publishing nothing for a year. Hiding those rows, or letting them look documented, would be a claim we can't back. Two things are refused outright: an incomplete ledger presented as complete, and a month with an explanation still waiting for its reviewer. Approve or send back every coding first.",
       },
       {
         kind: "rule",
@@ -2141,7 +2141,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 2,
         explanation:
-          "We publish gaps rather than around them. Blocking would mean publishing nothing for a year; hiding the rows or letting them look documented would be a claim we can't back. The only thing refused outright is an incomplete ledger presented as complete.",
+          "We publish gaps rather than around them. Blocking would mean publishing nothing for a year; hiding the rows or letting them look documented would be a claim we can't back. What's refused outright is an incomplete ledger, or a coding still waiting for review.",
       },
       {
         prompt: "Who can publish a month you prepared?",

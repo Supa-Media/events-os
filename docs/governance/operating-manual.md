@@ -488,6 +488,12 @@ by a second person is available but not required: anyone holding the publish
 power may publish a month they prepared themselves, and every published
 revision records whether a second person reviewed it.
 
+**No month is published while a coding in it waits for review.** Every
+explanation submitted for the month must first be approved or sent back by a
+reviewer; the software refuses to publish or correct the month until it is. A
+charge with no explanation written at all does not block publishing: it
+publishes marked as unexplained, and the page says how many there are.
+
 **What is published is frozen.** The public page shows the copy that was
 approved at publication, not a live view of the books. An edit made afterward
 cannot silently rewrite the public record.
