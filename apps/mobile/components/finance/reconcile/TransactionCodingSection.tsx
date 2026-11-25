@@ -273,7 +273,12 @@ export function TransactionCodingSection({
               promise something the backend will refuse. */}
           {!readOnly ? (
             <View className="mt-2 flex-row flex-wrap gap-2">
-              {canReview && coding.status === "submitted" ? (
+              {/* Sent-back codings too: the reviewer can approve once what
+                  was missing (usually the receipt) has arrived, without
+                  waiting on the author to resubmit. */}
+              {canReview &&
+              (coding.status === "submitted" ||
+                coding.status === "changes_requested") ? (
                 <Button
                   title="Approve"
                   onPress={() => void run(() => approve({ transactionId }))}
