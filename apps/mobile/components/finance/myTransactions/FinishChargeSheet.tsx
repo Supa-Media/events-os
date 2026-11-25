@@ -920,9 +920,12 @@ export function FinishChargeSheetBody({
 
         {/* THE REVIEWER'S DECISION — only when the host asked for it
                     (the workbench panel) AND there is a submitted coding to
-                    decide. Right below what it decides, same as
+                    decide — or a SENT-BACK one, which a reviewer may approve
+                    once what it lacked has arrived (#925). Right below what it decides, same as
                     `ReviewQueue`'s own ordering (purpose, then the verdict). */}
-        {renderReview && coding && coding.status === "submitted"
+        {renderReview &&
+        coding &&
+        (coding.status === "submitted" || coding.status === "changes_requested")
           ? renderReview({
               transactionId,
               coding,

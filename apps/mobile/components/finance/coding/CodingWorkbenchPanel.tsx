@@ -133,6 +133,8 @@ function ReviewActions({
 }: {
   transactionId: Id<"transactions">;
   coding: {
+    /** A sent-back coding can still be approved, but not sent back again. */
+    status?: string;
     businessPurpose: string;
     publicPurpose: string | null;
     publicPurposeByName: string | null;
@@ -230,7 +232,7 @@ function ReviewActions({
                 }}
               />
             )}
-            {!confirming ? (
+            {!confirming && coding.status !== "changes_requested" ? (
               <Button
                 title="Send back"
                 size="sm"

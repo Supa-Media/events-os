@@ -542,6 +542,12 @@ describe("review loop", () => {
       reviewNote: "There's no receipt on this",
     });
 
+    // It is still in the reviewer's queue — listed as sent back, so the
+    // Coding tab is where a reviewer finds it.
+    const queue = await s.as.query(api.transactionCodings.reviewQueue, {});
+    const listed = queue.rows.find((r) => r.transactionId === txnId);
+    expect(listed?.coding.status).toBe("changes_requested");
+
     await s.as.mutation(api.transactionCodings.approve, { transactionId: txnId });
     const after = await run(s.t, (ctx) => ctx.db.get(coding._id));
     expect(after?.status).toBe("approved");
