@@ -123,10 +123,21 @@ const MY_TRANSACTIONS_TAB: Tab = {
   path: "/finances/my-transactions",
 };
 
+/** The explanation review queue (`/finances/coding`). BACK ON THE BAR (Dev2,
+ *  2026-11-25: "could we have a coding button"). The flattening above removed
+ *  its chip on the theory that the reviewer email's deep link was enough, and
+ *  a reviewer who wanted to approve without that email had no way in at all.
+ *  Opens with the review queue first (`?review=1`, see `CODING_HREF`) because
+ *  a seat holder clicking it came to review; their own charges are under My
+ *  transactions. */
+const CODING_TAB: Tab = { label: "Coding", path: "/finances/coding" };
+const CODING_HREF = "/finances/coding?review=1";
+
 const SEAT_TABS: Tab[] = [
   { label: "Dashboard", path: "/finances" },
   MY_TRANSACTIONS_TAB,
   { label: "Book", path: "/finances/reconcile" },
+  CODING_TAB,
   { label: "Receipts", path: "/finances/receipts" },
   { label: "Sales", path: "/finances/sales" },
   BUDGETS_TAB,
@@ -170,7 +181,7 @@ function isActive(pathname: string, path: string): boolean {
 }
 
 /** The Book's menu leads to screens that are still their own routes (the
- *  publish console, the review queue). Standing on one of those must keep the
+ *  publish console). Standing on one of those must keep the
  *  Book chip lit, or the bar would say you had left finance's main tab by using
  *  its own menu.
  *
@@ -180,7 +191,7 @@ function isActive(pathname: string, path: string): boolean {
  *  and then the chase — see those two files), so nobody is ever standing on
  *  either long enough for the chip to matter, and listing one would claim a
  *  satellite that no longer exists. */
-const BOOK_SATELLITES = ["/finances/publish", "/finances/coding"] as const;
+const BOOK_SATELLITES = ["/finances/publish"] as const;
 
 /** The two owe-direction screens that hang off Reimbursements: the member's
  *  own "pay the org back" page and the manager's collections desk. Both are
@@ -235,7 +246,9 @@ export default function FinancesLayout() {
     <DeskShell
       tabs={tabs}
       isActive={(path) => isTabActive(pathname, path)}
-      onNavigate={(path) => router.navigate(path as never)}
+      onNavigate={(path) =>
+        router.navigate((path === CODING_TAB.path ? CODING_HREF : path) as never)
+      }
       beforeTabs={
         // Deployment-wide sandbox-mode banner (shows on every finance tab
         // when on) — seat-gated: it's only relevant to finance seat
