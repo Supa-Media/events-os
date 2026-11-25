@@ -273,6 +273,8 @@ const snapshotTotals = v.object({
   // was missing — preview simply being CALLED — now exists.
   unexplainedCount: v.number(),
   unexplainedCents: v.number(),
+  awaitingReviewCount: v.number(),
+  awaitingReviewCents: v.number(),
   truncated: v.boolean(),
   overCap: v.boolean(),
 });

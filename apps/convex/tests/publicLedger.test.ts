@@ -1328,6 +1328,13 @@ describe("a pre-policy month discloses what a reader can see", () => {
     expect(
       statement.entries.some((e) => e.counterparty === "A generous person"),
     ).toBe(true);
+
+    // And its ROW doesn't print the missing-explanation placeholder either —
+    // only the U-Haul charge does (Dev2, 2026-11-25: credits need no
+    // explanation, debits do).
+    const body = await (await s.t.fetch("/finances/2024-06", {})).text();
+    expect(body.split("No published explanation for this line").length - 1).toBe(1);
+    expect(body).toContain("Money received");
   });
 
   test("an internal movement is not counted as a missing explanation", async () => {
@@ -1370,6 +1377,21 @@ describe("the console preview answers at all", () => {
     expect(totals).not.toBeNull();
     expect(totals?.unexplainedCount).toBe(1);
     expect(totals?.unexplainedCents).toBe(4_783);
+  });
+
+  test("preview separates lines whose explanation is written but not yet approved", async () => {
+    // Dev2, 2026-11-25: New York's August said "10 lines with no written
+    // explanation" while 9 of them had one sitting in the review queue.
+    const s = await asPublisher();
+    const waiting = await insertTxn(s, { amountCents: 2_500 });
+    await run(s.t, (ctx) => ctx.db.patch(waiting, { codingState: "submitted" }));
+    await insertTxn(s, { amountCents: 4_000 });
+    const totals = await s.as.query(api.publicLedger.preview, {
+      periodKey: AUG_KEY,
+    });
+    expect(totals?.unexplainedCount).toBe(2);
+    expect(totals?.awaitingReviewCount).toBe(1);
+    expect(totals?.awaitingReviewCents).toBe(2_500);
   });
 
   test("preview returns totals for an empty month too", async () => {
