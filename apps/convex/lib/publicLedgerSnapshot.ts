@@ -200,6 +200,14 @@ export type Snapshot = {
    */
   unexplainedCount: number;
   unexplainedCents: number;
+  /** Of `unexplained*`, the lines whose explanation IS written and is only
+   *  waiting on a reviewer (`codingState === "submitted"`). Still not
+   *  published — only an approved coding is — but the publish panel must not
+   *  tell the publisher "no written explanation" about lines somebody wrote
+   *  up last week (Dev2, 2026-11-25: New York's August said "10 lines with no
+   *  written explanation" while 9 sat in the review queue). */
+  awaitingReviewCount: number;
+  awaitingReviewCents: number;
   /** A source scan hit `ROLLUP_SCAN_LIMIT`, so these figures may be
    *  incomplete. `publish` refuses to publish a snapshot carrying this — see
    *  `publicLedger.ts`. */
@@ -372,6 +380,8 @@ export async function buildSnapshot(
   let uncodedCents = 0;
   let unexplainedCount = 0;
   let unexplainedCents = 0;
+  let awaitingReviewCount = 0;
+  let awaitingReviewCents = 0;
 
   const addIncome = (stream: IncomeStream, cents: number) => {
     const b = incomeByStream.get(stream) ?? { cents: 0, count: 0 };
@@ -655,6 +665,10 @@ export async function buildSnapshot(
     if (!approved && canCarryExplanation(tr) && autoKind == null) {
       unexplainedCount += 1;
       unexplainedCents += tr.amountCents;
+      if (tr.codingState === "submitted") {
+        awaitingReviewCount += 1;
+        awaitingReviewCents += tr.amountCents;
+      }
     }
   }
 
@@ -805,6 +819,8 @@ export async function buildSnapshot(
     uncodedCents,
     unexplainedCount,
     unexplainedCents,
+    awaitingReviewCount,
+    awaitingReviewCents,
     truncated,
     overCap: entries.length > MAX_PUBLISHED_ENTRIES,
   };

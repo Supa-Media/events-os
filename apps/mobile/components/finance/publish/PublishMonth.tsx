@@ -67,6 +67,30 @@ export type PublishMonthSummary = NonNullable<
  * correction is being prepared under. Shown by both frames above the body,
  * because they are the reason the month is in the state it is in.
  */
+/**
+ * "N lines will publish with no explanation", split by whether one is WRITTEN.
+ * A written-but-unapproved explanation still doesn't publish (only an approved
+ * coding does), but calling it "no written explanation" sends the publisher
+ * hunting for blanks that aren't there — the fix is a reviewer, not a writer.
+ */
+function unexplainedSentence(p: {
+  unexplainedCount: number;
+  unexplainedCents: number;
+  awaitingReviewCount?: number;
+  awaitingReviewCents?: number;
+}): string {
+  const lines = (n: number) => `${n} line${n === 1 ? "" : "s"}`;
+  const waiting = p.awaitingReviewCount ?? 0;
+  const head = `${lines(p.unexplainedCount)} (${formatCents(p.unexplainedCents)}) will publish without an approved explanation.`;
+  if (waiting === 0) {
+    return `${lines(p.unexplainedCount)} (${formatCents(p.unexplainedCents)}) will publish with no written explanation of what ${p.unexplainedCount === 1 ? "it was" : "they were"} for.`;
+  }
+  const blank = p.unexplainedCount - waiting;
+  const waitingPart = `${waiting === p.unexplainedCount ? (waiting === 1 ? "It has" : "All of them have") : `${waiting} ${waiting === 1 ? "has" : "have"}`} one written (${formatCents(p.awaitingReviewCents ?? 0)}) that is waiting for a reviewer to approve`;
+  const blankPart = blank > 0 ? `; ${blank} ${blank === 1 ? "has" : "have"} nothing written yet` : "";
+  return `${head} ${waitingPart}${blankPart}.`;
+}
+
 export function PublishMonthNotes({ month }: { month: PublishMonthSummary }) {
   return (
     <>
@@ -201,7 +225,7 @@ export function PublishMonthBody({
           {preview.unexplainedCount > 0 ? (
             <>
               <Disclosure
-                text={`${preview.unexplainedCount} lines (${formatCents(preview.unexplainedCents)}) will publish with no written explanation of what they were for.`}
+                text={unexplainedSentence(preview)}
               />
               {/* The disclosure and the fix, one tap apart. Reading "61 lines
                   will publish blank" and having nowhere to go from it is how a
