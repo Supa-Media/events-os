@@ -479,7 +479,9 @@ wrote**, the spender's original sentence is kept on the record beside the
 correction, never erased. When a coding is approved with corrections, the
 spender is emailed that it was approved with corrections, with each change
 listed. The correction never moves authorship, so the second pair of eyes stays
-a second pair of eyes.
+a second pair of eyes. A reviewer may also approve a coding they sent back once
+what it was missing has arrived (a receipt attached later, say), without
+waiting for the author to resubmit it.
 
 The chapter **Treasurer** prepares the month, and the **Treasurer** or the
 **Chapter Director** publishes it. At central, the **Financial Manager**

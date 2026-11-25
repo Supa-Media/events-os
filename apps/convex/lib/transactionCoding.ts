@@ -503,7 +503,11 @@ export async function reviseCodingUnderReview(
 /**
  * Record a decision and keep the denorm in lock-step.
  *
- *  - APPROVE: only a `submitted` coding; clears any send-back note.
+ *  - APPROVE: a `submitted` coding, or a SENT-BACK one (`changes_requested`)
+ *    once what it was missing has arrived. Dev2, 2026-11-25: a charge sent
+ *    back for "no receipt" got its receipt a week later, the author never
+ *    resubmitted, and no reviewer could approve it — it sat unexplained on
+ *    the public page with "Receipt attached" beside it. Clears the note.
  *  - REQUEST CHANGES: a `submitted` OR `approved` coding (reopening an
  *    approved one is the audited amendment path), note REQUIRED — "rejected,
  *    no explanation" is how a policy stops being followed.
@@ -525,10 +529,10 @@ export async function decideCoding(
 ): Promise<void> {
   const reviewNote = args.reviewNote?.trim() || undefined;
   if (args.approve) {
-    if (args.coding.status !== "submitted") {
+    if (args.coding.status !== "submitted" && args.coding.status !== "changes_requested") {
       throw new ConvexError({
         code: "NOT_SUBMITTED",
-        message: "Only a coding awaiting review can be approved.",
+        message: "Only a coding awaiting review or sent back can be approved.",
       });
     }
   } else {

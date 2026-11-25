@@ -518,6 +518,37 @@ describe("review loop", () => {
     ).rejects.toMatchObject({ data: { code: "SOD_VIOLATION" } });
   });
 
+  test("a reviewer can approve a sent-back coding once what it lacked arrives", async () => {
+    // Dev2, 2026-11-25: sent back for "no receipt", receipt attached a week
+    // later, never resubmitted — and no reviewer could approve it.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const other = await seedOtherPerson(s, "Cardholder Cass");
+    const txnId = await seedTxn(s);
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE,
+    });
+    const coding = await run(s.t, async (ctx) =>
+      (await ctx.db.query("transactionCodings").collect())[0],
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.patch(coding._id, { codedByPersonId: other }),
+    );
+    await s.as.mutation(api.transactionCodings.requestChanges, {
+      transactionId: txnId,
+      reviewNote: "There's no receipt on this",
+    });
+
+    await s.as.mutation(api.transactionCodings.approve, { transactionId: txnId });
+    const after = await run(s.t, (ctx) => ctx.db.get(coding._id));
+    expect(after?.status).toBe("approved");
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.codingState).toBe("approved");
+  });
+
   test("approve (by a different person) → denorm approved; send back → changes_requested with the note; resubmit clears it", async () => {
     const t = newT();
     const s = await setupChapter(t);
